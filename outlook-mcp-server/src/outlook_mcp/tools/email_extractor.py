@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING
 from mcp.types import SamplingMessage, TextContent
 
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
-from outlook_mcp.tools._common import graph_message_to_model, make_graph_client, tool_error_token
+from outlook_mcp.models.email import ExtractionResult
+from outlook_mcp.tools._common import (
+    graph_message_to_model,
+    make_graph_client,
+    parse_json_object,
+    tool_error_token,
+)
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -29,7 +35,7 @@ Do not invent invoice numbers or amounts; only extract what is explicitly presen
 async def extract_email_data(message_id: str, ctx: Context) -> str:
     """Fetch the message and use sampling to extract invoice numbers, amounts, dates, payment references."""
     try:
-        g = await make_graph_client(ctx)
+        g = make_graph_client(ctx)
         raw = await g.get_message(
             message_id,
             select="id,subject,bodyPreview,body,receivedDateTime,from,conversationId",
@@ -55,11 +61,16 @@ async def extract_email_data(message_id: str, ctx: Context) -> str:
             temperature=0,
         )
         text = getattr(result.content, "text", None) or ""
+        raw_obj = parse_json_object(text)
+        if raw_obj.get("email_id") != message_id:
+            msg = "sampling email_id does not match requested message_id"
+            raise ValueError(msg)
+        parsed = ExtractionResult.model_validate(raw_obj)
         return json.dumps(
             {
                 "sampling": True,
                 "model": getattr(result, "model", None),
-                "extraction_text": text,
+                "extraction": parsed.model_dump(mode="json"),
                 "email": email_json,
             },
             indent=2,

@@ -45,7 +45,7 @@ Usually **no**. `langgraph-mcp-tester` only forwards the token string to the MCP
 
 **Required delegated scopes** (typical): `Mail.Read` for read tools; `Mail.Send` if `ENABLE_WRITE_OPERATIONS=true` on the server. Match what your app registration exposes and what the user consents to.
 
-**Alternative without `X_GRAPH_TOKEN` on the tester** — Run [outlook-mcp-server](../outlook-mcp-server/) with `GRAPH_DEV_TOKEN` (same JWT, server-side only for dev) or with `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` for **application** permissions (client credentials). That path uses the **server’s** client ID and secret, not the tester’s; it is a different auth model (app-only, no user mailbox unless you target a specific user).
+**Alternative without `X_GRAPH_TOKEN` on the tester** — Run [outlook-mcp-server](../outlook-mcp-server/) with `GRAPH_DEV_TOKEN` set to the same delegated JWT (server-side only, local dev). The server does not use stored Azure app secrets; multi-tenant operation relies on each caller’s token.
 
 ## Tests
 

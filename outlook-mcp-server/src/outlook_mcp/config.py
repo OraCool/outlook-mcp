@@ -24,9 +24,6 @@ class Settings(BaseSettings):
     )
 
     graph_dev_token: str | None = Field(default=None, validation_alias=AliasChoices("GRAPH_DEV_TOKEN"))
-    azure_tenant_id: str | None = Field(default=None, validation_alias=AliasChoices("AZURE_TENANT_ID"))
-    azure_client_id: str | None = Field(default=None, validation_alias=AliasChoices("AZURE_CLIENT_ID"))
-    azure_client_secret: str | None = Field(default=None, validation_alias=AliasChoices("AZURE_CLIENT_SECRET"))
 
     enable_write_operations: bool = Field(
         default=False,

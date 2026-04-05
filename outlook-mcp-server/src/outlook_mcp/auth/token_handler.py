@@ -1,4 +1,4 @@
-"""Resolve Microsoft Graph access tokens (delegated header, dev token, or client credentials)."""
+"""Resolve Microsoft Graph access tokens: per-request delegated token only."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Any
 import jwt
 from starlette.requests import Request
 
-from outlook_mcp.config import get_settings
-
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
+
+_BEARER_PREFIX = "bearer "
 
 
 class GraphTokenExpiredError(Exception):
@@ -30,7 +30,7 @@ def _header_token(request: Request | None, name: str) -> str | None:
     if not raw:
         return None
     raw = raw.strip()
-    if raw.lower().startswith("bearer "):
+    if raw.lower().startswith(_BEARER_PREFIX):
         raw = raw[7:].strip()
     return raw or None
 
@@ -54,30 +54,16 @@ def _ensure_not_expired(token: str) -> None:
         raise GraphTokenExpiredError("Graph token JWT exp claim is in the past")
 
 
-async def _client_credentials_token() -> tuple[str, int]:
-    s = get_settings()
-    if not (s.azure_tenant_id and s.azure_client_id and s.azure_client_secret):
-        raise GraphTokenMissingError("Client credentials are not fully configured")
+def resolve_delegated_graph_access_token(ctx: Context | None) -> tuple[str, int]:
+    """Return (access_token, expires_on_unix) for delegated Graph calls.
 
-    from azure.identity.aio import ClientSecretCredential
+    Order: HTTP ``X-Graph-Token`` → ``GRAPH_DEV_TOKEN`` (local dev only).
 
-    cred = ClientSecretCredential(
-        s.azure_tenant_id,
-        s.azure_client_id,
-        s.azure_client_secret,
-    )
-    try:
-        at = await cred.get_token("https://graph.microsoft.com/.default")
-        return at.token, int(at.expires_on)
-    finally:
-        await cred.close()
-
-
-async def resolve_graph_access_token(ctx: Context | None) -> tuple[str, int]:
-    """Return (access_token, expires_on_unix).
-
-    Order: HTTP ``X-Graph-Token`` → ``GRAPH_DEV_TOKEN`` → Azure client credentials.
+    The server does not store tenant/client secrets: multi-tenant callers must pass
+    the user's delegated token on each request (Path C / ADR-006).
     """
+    from outlook_mcp.config import get_settings
+
     request: Request | None = None
     if ctx is not None:
         try:
@@ -95,10 +81,12 @@ async def resolve_graph_access_token(ctx: Context | None) -> tuple[str, int]:
     s = get_settings()
     if s.graph_dev_token:
         dev = s.graph_dev_token.strip()
-        if dev.lower().startswith("bearer "):
+        if dev.lower().startswith(_BEARER_PREFIX):
             dev = dev[7:].strip()
         _ensure_not_expired(dev)
         exp = _exp_from_jwt(dev) or (int(time.time()) + 3600)
         return dev, exp
 
-    return await _client_credentials_token()
+    raise GraphTokenMissingError(
+        "X-Graph-Token header was not provided and GRAPH_DEV_TOKEN is not configured."
+    )

@@ -42,7 +42,7 @@ async def send_email(
         "saveToSentItems": save_to_sent_items,
     }
     try:
-        client = await make_graph_client(ctx)
+        client = make_graph_client(ctx)
         await client.send_mail(payload)
         return json.dumps({"ok": True, "message": "Message accepted by Graph sendMail."})
     except (GraphTokenExpiredError, GraphTokenMissingError) as e:
@@ -82,7 +82,7 @@ async def create_draft(
         msg["toRecipients"] = [{"emailAddress": {"address": a}} for a in to_addresses]
 
     try:
-        client = await make_graph_client(ctx)
+        client = make_graph_client(ctx)
         created = await client.create_message_draft(msg)
         return json.dumps({"ok": True, "message": created}, indent=2)
     except (GraphTokenExpiredError, GraphTokenMissingError) as e:

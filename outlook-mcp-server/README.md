@@ -8,7 +8,7 @@ MCP server for **Microsoft Outlook / Microsoft Graph** mail operations, built fo
 - **AI tools** (MCP sampling): `categorize_email`, `extract_email_data` — fall back to returning raw email JSON if the client does not support sampling
 - **Write tools** (optional): `send_email`, `create_draft` — disabled unless `ENABLE_WRITE_OPERATIONS=true` (ADR-005 prefers the Graph API Bridge for send)
 - **Transports**: `stdio` (CodeMie MCP-Connect Bridge, local dev) and `streamable-http` (AKS / Traefik)
-- **Auth**: `X-Graph-Token` (delegated Graph token), or `GRAPH_DEV_TOKEN`, or Azure **client credentials** for dev/tests
+- **Auth**: delegated Graph token via `X-Graph-Token` (or `GRAPH_DEV_TOKEN` for local dev)
 
 ## Requirements
 
@@ -29,12 +29,11 @@ pip install -e ".[dev]"
 See [`.env.example`](.env.example). Important variables:
 
 | Variable | Description |
-|----------|-------------|
+| -------- | ----------- |
 | `MCP_TRANSPORT` | `stdio` (default) or `streamable-http` |
 | `MCP_HOST` / `MCP_PORT` | Bind address for Streamable HTTP (default `127.0.0.1:8000`; use `0.0.0.0` in containers) |
 | `MCP_STATELESS_HTTP` | `true` for stateless Streamable HTTP (better behind LB; sampling may be limited) |
-| `GRAPH_DEV_TOKEN` | Optional static token for local testing only |
-| `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | Optional client-credentials fallback |
+| `GRAPH_DEV_TOKEN` | Optional static delegated token for local testing only (never production) |
 | `ENABLE_WRITE_OPERATIONS` | `true` to enable `send_email` / `create_draft` |
 
 ## Run
@@ -78,9 +77,7 @@ docker run --rm -p 8000:8000 \
 For **Path C** / production-style testing you need a **user-delegated** Graph access token (JWT) with scopes such as `Mail.Read`.
 
 - **[Graph Explorer](https://developer.microsoft.com/en-us/graph/graph-explorer)** — Sign in and copy the access token for quick manual tests.
-- **Your own app registration** — Create an app in [Entra ID](https://entra.microsoft.com/), configure redirect URIs and **API permissions** (Microsoft Graph delegated: `Mail.Read`, etc.), then use the [OAuth 2.0 authorization code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow) or [MSAL](https://learn.microsoft.com/en-us/entra/msal/overview) to acquire tokens. The **Application (client) ID** is part of that OAuth client, not something the MCP server consumes from callers except in the dev fallbacks below.
-
-**`AZURE_CLIENT_ID` in `.env` (optional)** — Use together with `AZURE_TENANT_ID` and `AZURE_CLIENT_SECRET` only for the **client credentials** fallback: the server obtains an **application** token (app-only). That is **not** the same as a user’s delegated token in `X-Graph-Token`. For normal delegated mail access, callers supply `X-Graph-Token` (or you set `GRAPH_DEV_TOKEN` for local dev only).
+- **Your own app registration** — Create an app in [Entra ID](https://entra.microsoft.com/), configure redirect URIs and **API permissions** (Microsoft Graph delegated: `Mail.Read`, etc.), then use the [OAuth 2.0 authorization code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow) or [MSAL](https://learn.microsoft.com/en-us/entra/msal/overview) to acquire tokens. The **Application (client) ID** belongs to that OAuth client (your UI or gateway); this MCP server does **not** read tenant/client secrets from `.env` — only the per-request delegated token (`X-Graph-Token`) or `GRAPH_DEV_TOKEN` for local dev.
 
 ## Tests
 

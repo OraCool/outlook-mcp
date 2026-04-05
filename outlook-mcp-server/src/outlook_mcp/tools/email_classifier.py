@@ -7,8 +7,14 @@ from typing import TYPE_CHECKING
 
 from mcp.types import SamplingMessage, TextContent
 
+from outlook_mcp.models.email import ClassificationResult
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
-from outlook_mcp.tools._common import graph_message_to_model, make_graph_client, tool_error_token
+from outlook_mcp.tools._common import (
+    graph_message_to_model,
+    make_graph_client,
+    parse_json_object,
+    tool_error_token,
+)
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -51,7 +57,7 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
     If the client does not support sampling, returns the email JSON plus a note to classify upstream.
     """
     try:
-        client = await make_graph_client(ctx)
+        client = make_graph_client(ctx)
         raw = await client.get_message(
             message_id,
             select=(
@@ -85,11 +91,16 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
             temperature=0,
         )
         text = getattr(result.content, "text", None) or ""
+        raw_obj = parse_json_object(text)
+        if raw_obj.get("email_id") != message_id:
+            msg = "sampling email_id does not match requested message_id"
+            raise ValueError(msg)
+        parsed = ClassificationResult.model_validate(raw_obj)
         return json.dumps(
             {
                 "sampling": True,
                 "model": getattr(result, "model", None),
-                "classification_text": text,
+                "classification": parsed.model_dump(mode="json"),
                 "email": email_json,
             },
             indent=2,
