@@ -73,6 +73,15 @@ docker run --rm -p 8000:8000 \
 2. **Expired token**: Tools return a JSON payload with `code: ERR_GRAPH_TOKEN_EXPIRED` (ADR-006).
 3. **Logging**: Never log `X-Graph-Token` or email bodies in production.
 
+### Obtaining a Graph token (delegated)
+
+For **Path C** / production-style testing you need a **user-delegated** Graph access token (JWT) with scopes such as `Mail.Read`.
+
+- **[Graph Explorer](https://developer.microsoft.com/en-us/graph/graph-explorer)** — Sign in and copy the access token for quick manual tests.
+- **Your own app registration** — Create an app in [Entra ID](https://entra.microsoft.com/), configure redirect URIs and **API permissions** (Microsoft Graph delegated: `Mail.Read`, etc.), then use the [OAuth 2.0 authorization code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow) or [MSAL](https://learn.microsoft.com/en-us/entra/msal/overview) to acquire tokens. The **Application (client) ID** is part of that OAuth client, not something the MCP server consumes from callers except in the dev fallbacks below.
+
+**`AZURE_CLIENT_ID` in `.env` (optional)** — Use together with `AZURE_TENANT_ID` and `AZURE_CLIENT_SECRET` only for the **client credentials** fallback: the server obtains an **application** token (app-only). That is **not** the same as a user’s delegated token in `X-Graph-Token`. For normal delegated mail access, callers supply `X-Graph-Token` (or you set `GRAPH_DEV_TOKEN` for local dev only).
+
 ## Tests
 
 ```bash
