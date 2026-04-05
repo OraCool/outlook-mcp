@@ -15,14 +15,14 @@ MCP server for **Microsoft Outlook / Microsoft Graph** mail operations, built fo
 - Python 3.12+
 - Microsoft Graph permissions on the token: at least `Mail.Read` for read tools; `Mail.Send` for write tools when enabled
 
-## Install (development)
+## Install (development, uv)
 
 ```bash
 cd outlook-mcp-server
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
+
+If you prefer pip/venv, `pip install -e ".[dev]"` still works.
 
 ## Configuration
 
@@ -41,18 +41,14 @@ See [`.env.example`](.env.example). Important variables:
 **stdio** (default):
 
 ```bash
-export MCP_TRANSPORT=stdio
-outlook-mcp-server
-# or: python -m outlook_mcp.server
+MCP_TRANSPORT=stdio uv run outlook-mcp-server
+# or: MCP_TRANSPORT=stdio uv run python -m outlook_mcp.server
 ```
 
 **Streamable HTTP** (MCP endpoint default path `/mcp`, health `GET /health`):
 
 ```bash
-export MCP_TRANSPORT=streamable-http
-export MCP_HOST=0.0.0.0
-export MCP_PORT=8000
-outlook-mcp-server
+MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 uv run outlook-mcp-server
 ```
 
 Point an MCP client at `http://<host>:8000/mcp` (Streamable HTTP).
@@ -82,7 +78,7 @@ For **Path C** / production-style testing you need a **user-delegated** Graph ac
 ## Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ## References
