@@ -21,6 +21,28 @@ MCP server for **Microsoft Outlook / Microsoft Graph** mail operations, built fo
 
 **Search:** `search_emails` expects a [KQL](https://learn.microsoft.com/en-us/graph/search-query-parameter) string (mailbox search, eventual consistency).
 
+## Install from PyPI ([`uvx`](https://docs.astral.sh/uv/guides/tools/))
+
+After the package is published to [PyPI](https://pypi.org/project/outlook-mcp-server/), run the server without cloning the repo. You need [uv](https://docs.astral.sh/uv/) installed locally.
+
+```bash
+uvx outlook-mcp-server
+```
+
+Pin a release:
+
+```bash
+uvx outlook-mcp-server==0.1.0
+```
+
+OAuth **device-code** helper (stdio-friendly MSAL cache; same PyPI package):
+
+```bash
+uvx outlook-mcp-oauth-device
+```
+
+Set the same environment variables as in a dev checkout (see **Configuration** and [`.env.example`](.env.example)). **`uvx` uses stdio MCP by default.** For **Streamable HTTP** with **`X-Graph-Token`**, run the server as a process or container and point clients at the HTTP MCP URL instead of `uvx`.
+
 ## Install (development, uv)
 
 ```bash
@@ -60,7 +82,7 @@ MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 uv run outlook-mcp-
 
 Point an MCP client at `http://<host>:8000/mcp` (Streamable HTTP).
 
-### MCP Inspector
+## MCP Inspector
 
 Use the official [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to connect to this server and try tools in the browser.
 
@@ -72,6 +94,12 @@ npx @modelcontextprotocol/inspector \
   --directory outlook-mcp-server \
   run \
   outlook-mcp-server
+```
+
+**From PyPI** (no local clone; requires the package on PyPI and `uvx` on `PATH`):
+
+```bash
+npx @modelcontextprotocol/inspector uvx outlook-mcp-server
 ```
 
 The CLI prints a local URL (often with an `MCP_PROXY_AUTH_TOKEN` query parameter). Open it in the browser. In the UI, choose the **STDIO** transport if it is not already selected.
@@ -113,6 +141,61 @@ Tools **`categorize_email`**, **`extract_email_data`**, and **`apply_llm_categor
 - **If sampling fails**, those tools return **`sampling: false`** (or an error for **`apply_llm_category_to_email`**) plus **`hint`** text and the **full message JSON** from Microsoft Graph (`email`), including raw `body_content` when the message is HTML. That payload is **intentional**: it lets you or an upstream model classify the message outside MCP sampling. It is **not** the same as the truncated, HTML-stripped text sent inside the sampling prompt.
 
 **Troubleshooting:** If a tool is missing from the Inspector list, **disconnect and reconnect** after upgrading. Some Inspector versions drop tools whose input schema uses **`anyOf` / nullable types**; `list_master_categories` uses a plain integer **`top`** (default 500, Graph **`$top`**) so its schema matches tools like **`list_inbox`**. Confirm the running server is this repo: `cd outlook-mcp-server && uv run python -c "from outlook_mcp.server import mcp_app; print([t.name for t in mcp_app._tool_manager.list_tools()])"`.
+
+## MCP clients (Cursor, Claude Code, GitHub Copilot, Codex)
+
+IDE and agent integrations change between versions—use each product’s current docs for file paths and JSON/TOML schema. The stable pattern for **stdio + PyPI** is:
+
+- **command:** `uvx`
+- **args:** `["outlook-mcp-server"]` (optional version pin: `["outlook-mcp-server==0.1.0"]`)
+- **env:** Graph-related variables from [`.env.example`](.env.example) (e.g. `GRAPH_DEV_TOKEN`, `MCP_TRANSPORT`, `ENABLE_WRITE_OPERATIONS`). **Never commit real tokens**; use env injection or secret stores.
+
+From a **git checkout** instead of PyPI, use **command** `uv` and **args** like `["run", "outlook-mcp-server"]` with **working directory** set to `outlook-mcp-server` (if the client supports `cwd`).
+
+### Cursor
+
+See the [Cursor Model Context Protocol](https://docs.cursor.com/context/model-context-protocol) docs. Register a stdio server with `uvx` / `outlook-mcp-server` and set **env** for auth.
+
+Example shape (field names may differ by Cursor version):
+
+```json
+{
+  "mcpServers": {
+    "outlook-mcp": {
+      "command": "uvx",
+      "args": ["outlook-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+Add `GRAPH_DEV_TOKEN` or `GRAPH_OAUTH_TOKEN_CACHE_PATH` under `env` as needed.
+
+### Claude Code
+
+See [MCP in Claude Code](https://docs.anthropic.com/en/docs/claude-code/mcp). Add a **stdio** server using the same `uvx` + `outlook-mcp-server` entrypoint and environment variables as above.
+
+### GitHub Copilot (VS Code)
+
+See [Use MCP servers in VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers). Configure a stdio server with **command** `uvx`, **args** `["outlook-mcp-server"]`, and **env** for Microsoft Graph auth.
+
+### OpenAI Codex (CLI / IDE)
+
+Codex reads MCP settings from **`~/.codex/config.toml`**. See [Model Context Protocol – Codex](https://developers.openai.com/codex/mcp) and the [configuration reference](https://developers.openai.com/codex/config-reference).
+
+Example (syntax per your Codex version):
+
+```toml
+[mcp_servers.outlook-mcp]
+command = "uvx"
+args = ["outlook-mcp-server"]
+env = { MCP_TRANSPORT = "stdio" }
+```
+
+Set `GRAPH_DEV_TOKEN` (or other vars) in the process environment before starting Codex if you prefer not to store secrets in the file.
 
 ## Docker
 
@@ -213,6 +296,7 @@ uv run pytest
 
 ## References
 
+- [uv tool install / `uvx`](https://docs.astral.sh/uv/guides/tools/) — run the published package without a clone
 - [MCP Inspector](https://github.com/modelcontextprotocol/inspector) — browser UI to connect to this server over STDIO or Streamable HTTP
 - [Graph Explorer](https://developer.microsoft.com/en-us/graph/graph-explorer) — try APIs and copy a delegated access token for manual tests
 - [Microsoft Graph Mail API overview](https://learn.microsoft.com/en-us/graph/api/resources/mail-api-overview?view=graph-rest-1.0)
