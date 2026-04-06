@@ -2,7 +2,7 @@
 
 Monorepo with a **Model Context Protocol (MCP)** server for Microsoft Outlook mail via [Microsoft Graph](https://learn.microsoft.com/en-us/graph/), plus an optional **LangGraph** agent used to exercise the server locally.
 
-**Upstream:** [github.com/OraCool/outlook-mcp](https://github.com/OraCool/outlook-mcp) · **PyPI:** [`outlook-mcp-server`](https://pypi.org/project/outlook-mcp-server/) (after first release)
+**Upstream:** [github.com/OraCool/outlook-mcp](https://github.com/OraCool/outlook-mcp) · **PyPI:** [`outlook-multi-tenant-mcp`](https://pypi.org/project/outlook-multi-tenant-mcp/)
 
 ## Packages
 
@@ -18,14 +18,16 @@ Monorepo with a **Model Context Protocol (MCP)** server for Microsoft Outlook ma
 After the package is on PyPI, you can run the MCP server without cloning (requires [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-uvx outlook-mcp-server
+uvx outlook-multi-tenant-mcp
 ```
 
 Pin a version:
 
 ```bash
-uvx outlook-mcp-server==0.1.0
+uvx outlook-multi-tenant-mcp==0.1.0
 ```
+
+The same install also provides the **`outlook-mcp-server`** CLI for backwards compatibility.
 
 Set Microsoft Graph–related environment variables the same way as in development (see [`outlook-mcp-server/.env.example`](outlook-mcp-server/.env.example)). Client-specific setup (Cursor, Claude Code, VS Code Copilot, OpenAI Codex) is documented in [`outlook-mcp-server/README.md`](outlook-mcp-server/README.md).
 
@@ -56,7 +58,7 @@ uv run langgraph-mcp-tester "List the 5 most recent messages in my inbox"
 ## CI and releases
 
 - **Tests:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `pytest` in both packages on push and pull requests to `main` / `master`.
-- **PyPI:** [`.github/workflows/publish-pypi.yml`](.github/workflows/publish-pypi.yml) builds and publishes **`outlook-mcp-server`** when you push a tag matching `v*.*.*` or run the workflow manually (**Actions → Publish to PyPI → Run workflow**). Bump the version in [`outlook-mcp-server/pyproject.toml`](outlook-mcp-server/pyproject.toml) before each release (PyPI rejects duplicate file versions).
+- **PyPI:** [`.github/workflows/publish-pypi.yml`](.github/workflows/publish-pypi.yml) builds and publishes **`outlook-multi-tenant-mcp`** from the [`outlook-mcp-server/`](outlook-mcp-server/) package when you push a tag matching `v*.*.*` or run the workflow manually (**Actions → Publish to PyPI → Run workflow**). Bump the version in [`outlook-mcp-server/pyproject.toml`](outlook-mcp-server/pyproject.toml) before each release (PyPI rejects duplicate file versions).
 
 ## First-time publish to GitHub (single commit, no history)
 
@@ -89,7 +91,7 @@ Use this when you want the remote to contain **only one commit** (no prior histo
 Avoid long-lived PyPI passwords in GitHub:
 
 1. In [PyPI](https://pypi.org/manage/account/publishing/) (or TestPyPI for a dry run), add a **pending** trusted publisher: **GitHub** as the provider, owner **`OraCool`**, repository name (e.g. **`outlook-mcp`**), workflow **`publish-pypi.yml`**, environment name **leave empty** unless you create a matching [GitHub Environment](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) and configure the same name on PyPI.
-2. Run **Publish to PyPI** once (tag or `workflow_dispatch`). A successful OIDC upload **creates** the PyPI project if it does not exist yet.
+2. Run **Publish to PyPI** once (tag or `workflow_dispatch`). The PyPI project name must match **`outlook-multi-tenant-mcp`** (see `name` in `outlook-mcp-server/pyproject.toml`). A successful OIDC upload **creates** the PyPI project if it does not exist yet.
 3. **API token (used by default in this repo):** add a repository secret **`PYPI_API_TOKEN`** (PyPI API token with upload scope). The **Publish to PyPI** workflow sets `UV_PUBLISH_TOKEN` from that secret and runs `uv publish --trusted-publishing never` so uploads do not rely on OIDC.
 
 Details: [PyPI trusted publishers](https://docs.pypi.org/trusted-publishers/), [`uv publish`](https://docs.astral.sh/uv/guides/package/#publishing-your-package).

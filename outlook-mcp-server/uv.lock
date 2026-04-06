@@ -991,7 +991,7 @@ wheels = [
 ]
 
 [[package]]
-name = "outlook-mcp-server"
+name = "outlook-multi-tenant-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

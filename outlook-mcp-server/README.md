@@ -23,17 +23,19 @@ MCP server for **Microsoft Outlook / Microsoft Graph** mail operations, built fo
 
 ## Install from PyPI ([`uvx`](https://docs.astral.sh/uv/guides/tools/))
 
-After the package is published to [PyPI](https://pypi.org/project/outlook-mcp-server/), run the server without cloning the repo. You need [uv](https://docs.astral.sh/uv/) installed locally.
+After the package is published to [PyPI](https://pypi.org/project/outlook-multi-tenant-mcp/) (`outlook-multi-tenant-mcp`), run the server without cloning the repo. You need [uv](https://docs.astral.sh/uv/) installed locally.
 
 ```bash
-uvx outlook-mcp-server
+uvx outlook-multi-tenant-mcp
 ```
 
 Pin a release:
 
 ```bash
-uvx outlook-mcp-server==0.1.0
+uvx outlook-multi-tenant-mcp==0.1.0
 ```
+
+The same wheel also installs the **`outlook-mcp-server`** command (same entry point) for older docs and scripts.
 
 OAuth **device-code** helper (stdio-friendly MSAL cache; same PyPI package):
 
@@ -99,7 +101,7 @@ npx @modelcontextprotocol/inspector \
 **From PyPI** (no local clone; requires the package on PyPI and `uvx` on `PATH`):
 
 ```bash
-npx @modelcontextprotocol/inspector uvx outlook-mcp-server
+npx @modelcontextprotocol/inspector uvx outlook-multi-tenant-mcp
 ```
 
 The CLI prints a local URL (often with an `MCP_PROXY_AUTH_TOKEN` query parameter). Open it in the browser. In the UI, choose the **STDIO** transport if it is not already selected.
@@ -147,14 +149,14 @@ Tools **`categorize_email`**, **`extract_email_data`**, and **`apply_llm_categor
 IDE and agent integrations change between versions—use each product’s current docs for file paths and JSON/TOML schema. The stable pattern for **stdio + PyPI** is:
 
 - **command:** `uvx`
-- **args:** `["outlook-mcp-server"]` (optional version pin: `["outlook-mcp-server==0.1.0"]`)
+- **args:** `["outlook-multi-tenant-mcp"]` (optional version pin: `["outlook-multi-tenant-mcp==0.1.0"]`)
 - **env:** Graph-related variables from [`.env.example`](.env.example) (e.g. `GRAPH_DEV_TOKEN`, `MCP_TRANSPORT`, `ENABLE_WRITE_OPERATIONS`). **Never commit real tokens**; use env injection or secret stores.
 
-From a **git checkout** instead of PyPI, use **command** `uv` and **args** like `["run", "outlook-mcp-server"]` with **working directory** set to `outlook-mcp-server` (if the client supports `cwd`).
+From a **git checkout** instead of PyPI, use **command** `uv` and **args** like `["run", "outlook-mcp-server"]` with **working directory** set to `outlook-mcp-server` (if the client supports `cwd`). Alternatively `["run", "outlook-multi-tenant-mcp"]` after `uv sync` in that directory.
 
 ### Cursor
 
-See the [Cursor Model Context Protocol](https://docs.cursor.com/context/model-context-protocol) docs. Register a stdio server with `uvx` / `outlook-mcp-server` and set **env** for auth.
+See the [Cursor Model Context Protocol](https://docs.cursor.com/context/model-context-protocol) docs. Register a stdio server with `uvx` / `outlook-multi-tenant-mcp` and set **env** for auth.
 
 Example shape (field names may differ by Cursor version):
 
@@ -163,7 +165,7 @@ Example shape (field names may differ by Cursor version):
   "mcpServers": {
     "outlook-mcp": {
       "command": "uvx",
-      "args": ["outlook-mcp-server"],
+      "args": ["outlook-multi-tenant-mcp"],
       "env": {
         "MCP_TRANSPORT": "stdio"
       }
@@ -176,11 +178,11 @@ Add `GRAPH_DEV_TOKEN` or `GRAPH_OAUTH_TOKEN_CACHE_PATH` under `env` as needed.
 
 ### Claude Code
 
-See [MCP in Claude Code](https://docs.anthropic.com/en/docs/claude-code/mcp). Add a **stdio** server using the same `uvx` + `outlook-mcp-server` entrypoint and environment variables as above.
+See [MCP in Claude Code](https://docs.anthropic.com/en/docs/claude-code/mcp). Add a **stdio** server using the same `uvx` + `outlook-multi-tenant-mcp` entrypoint and environment variables as above.
 
 ### GitHub Copilot (VS Code)
 
-See [Use MCP servers in VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers). Configure a stdio server with **command** `uvx`, **args** `["outlook-mcp-server"]`, and **env** for Microsoft Graph auth.
+See [Use MCP servers in VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers). Configure a stdio server with **command** `uvx`, **args** `["outlook-multi-tenant-mcp"]`, and **env** for Microsoft Graph auth.
 
 ### OpenAI Codex (CLI / IDE)
 
@@ -191,7 +193,7 @@ Example (syntax per your Codex version):
 ```toml
 [mcp_servers.outlook-mcp]
 command = "uvx"
-args = ["outlook-mcp-server"]
+args = ["outlook-multi-tenant-mcp"]
 env = { MCP_TRANSPORT = "stdio" }
 ```
 
@@ -296,6 +298,7 @@ uv run pytest
 
 ## References
 
+- [PyPI: `outlook-multi-tenant-mcp`](https://pypi.org/project/outlook-multi-tenant-mcp/)
 - [uv tool install / `uvx`](https://docs.astral.sh/uv/guides/tools/) — run the published package without a clone
 - [MCP Inspector](https://github.com/modelcontextprotocol/inspector) — browser UI to connect to this server over STDIO or Streamable HTTP
 - [Graph Explorer](https://developer.microsoft.com/en-us/graph/graph-explorer) — try APIs and copy a delegated access token for manual tests

@@ -3,9 +3,9 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "outlook-mcp-server"
+name = "outlook-multi-tenant-mcp"
 version = "0.1.0"
-description = "MCP server for Microsoft Outlook / Microsoft Graph mail operations"
+description = "MCP server for Microsoft Outlook / Microsoft Graph mail (multi-tenant delegated tokens)"
 readme = "README.md"
 license = "MIT"
 keywords = ["mcp", "microsoft-graph", "outlook", "email", "model-context-protocol"]
@@ -33,6 +33,7 @@ dependencies = [
 Homepage = "https://github.com/OraCool/outlook-mcp"
 Repository = "https://github.com/OraCool/outlook-mcp"
 Documentation = "https://github.com/OraCool/outlook-mcp/tree/main/outlook-mcp-server"
+PyPI = "https://pypi.org/project/outlook-multi-tenant-mcp/"
 "Bug Tracker" = "https://github.com/OraCool/outlook-mcp/issues"
 
 [project.optional-dependencies]
@@ -42,6 +43,7 @@ dev = [
 ]
 
 [project.scripts]
+outlook-multi-tenant-mcp = "outlook_mcp.server:main"
 outlook-mcp-server = "outlook_mcp.server:main"
 outlook-mcp-oauth-device = "outlook_mcp.oauth_device:main"
 
