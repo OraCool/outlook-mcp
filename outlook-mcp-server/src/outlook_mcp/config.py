@@ -33,6 +33,17 @@ class Settings(BaseSettings):
         description="Per-request timeout for Microsoft Graph HTTP calls (seconds).",
     )
 
+    mcp_sampling_timeout_seconds: float = Field(
+        default=120.0,
+        ge=5.0,
+        le=600.0,
+        validation_alias=AliasChoices("MCP_SAMPLING_TIMEOUT_SECONDS", "mcp_sampling_timeout_seconds"),
+        description=(
+            "Max wait for the MCP client to answer sampling/createMessage. "
+            "Prevents tools from hanging when the client never completes sampling (e.g. Inspector UI left open)."
+        ),
+    )
+
     enable_write_operations: bool = Field(
         default=False,
         validation_alias=AliasChoices("ENABLE_WRITE_OPERATIONS", "enable_write_operations"),
@@ -74,8 +85,11 @@ def get_settings() -> Settings:
 
 
 def oauth_scope_list(settings: Settings) -> list[str]:
-    """Space-separated scopes from settings, plus Mail.Send when writes are enabled."""
+    """Space-separated scopes from settings, plus Mail.Send and Mail.ReadWrite when writes are enabled."""
     parts = [p for p in settings.graph_oauth_scopes.replace(",", " ").split() if p]
-    if settings.enable_write_operations and "Mail.Send" not in parts:
-        parts.append("Mail.Send")
+    if settings.enable_write_operations:
+        if "Mail.Send" not in parts:
+            parts.append("Mail.Send")
+        if "Mail.ReadWrite" not in parts:
+            parts.append("Mail.ReadWrite")
     return parts if parts else ["Mail.Read", "offline_access"]

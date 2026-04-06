@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,13 +27,16 @@ async def test_build_sampling_callback_forwards_to_model(monkeypatch: pytest.Mon
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
 
     class FakeModel:
-        async def ainvoke(self, messages: list) -> AIMessage:
+        def bind(self, **kwargs: Any) -> FakeModel:
+            return self
+
+        async def ainvoke(self, messages: list, **kwargs: Any) -> AIMessage:
             assert any(getattr(m, "content", None) == "user says hi" for m in messages)
             return AIMessage(content="model-reply-text")
 
     monkeypatch.setattr("langgraph_mcp_tester.client.create_chat_model", lambda _s: FakeModel())
 
-    s = OutlookAgentSettings()
+    s = OutlookAgentSettings(_env_file=None)
     cb = build_sampling_callback(s)
     params = CreateMessageRequestParams(
         messages=[
@@ -46,3 +50,38 @@ async def test_build_sampling_callback_forwards_to_model(monkeypatch: pytest.Mon
     result = await cb(MagicMock(), params)
     assert result.content.text == "model-reply-text"
     assert result.model == "gpt-4o-mini"
+
+
+@pytest.mark.asyncio
+async def test_build_sampling_callback_skips_thinking_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    class FakeModel:
+        def bind(self, **kwargs: Any) -> FakeModel:
+            return self
+
+        async def ainvoke(self, messages: list, **kwargs: Any) -> AIMessage:
+            return AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "internal"},
+                    {"type": "text", "text": '{"email_id":"z","category":"UNCLASSIFIED"}'},
+                ]
+            )
+
+    monkeypatch.setattr("langgraph_mcp_tester.client.create_chat_model", lambda _s: FakeModel())
+
+    s = OutlookAgentSettings(_env_file=None)
+    cb = build_sampling_callback(s)
+    params = CreateMessageRequestParams(
+        messages=[
+            SamplingMessage(
+                role="user",
+                content=TextContent(type="text", text="classify"),
+            )
+        ],
+        maxTokens=32,
+    )
+    result = await cb(MagicMock(), params)
+    assert result.content.text == '{"email_id":"z","category":"UNCLASSIFIED"}'

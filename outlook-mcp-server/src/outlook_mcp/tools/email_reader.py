@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -16,6 +16,10 @@ if TYPE_CHECKING:
 
 _DEFAULT_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,sentDateTime,conversationId,"
+    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,categories"
+)
+_LIST_SELECT = (
+    "id,subject,bodyPreview,receivedDateTime,sentDateTime,conversationId,"
     "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,categories"
 )
 
@@ -61,7 +65,9 @@ async def get_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
     await tool_report_progress(ctx, 10, 100, message="get_thread: start")
     try:
         await tool_report_progress(ctx, 40, 100, message="get_thread: calling Graph")
-        data = await client.list_messages_by_conversation(conversation_id, top=top)
+        data = await client.list_messages_by_conversation(
+            conversation_id, top=top, select=_LIST_SELECT
+        )
         await tool_report_progress(ctx, 80, 100, message="get_thread: mapping messages")
         items = data.get("value") or []
         models = [graph_message_to_model(m).model_dump(mode="json", by_alias=True) for m in items]
@@ -96,22 +102,12 @@ async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
     await tool_report_progress(ctx, 10, 100, message="search_emails: start")
     try:
         await tool_report_progress(ctx, 40, 100, message="search_emails: calling Graph")
-        data = await client.search_messages(query, top=top)
+        data = await client.search_messages(query, top=top, select=_LIST_SELECT)
         await tool_report_progress(ctx, 80, 100, message="search_emails: mapping results")
         items = data.get("value") or []
-        # Search responses may omit body; enrich minimally
-        slim: list[dict[str, Any]] = []
-        for m in items:
-            slim.append(
-                graph_message_to_model(
-                    {
-                        **m,
-                        "body": m.get("body") or {},
-                    }
-                ).model_dump(mode="json", by_alias=True)
-            )
+        models = [graph_message_to_model(m).model_dump(mode="json", by_alias=True) for m in items]
         await tool_report_progress(ctx, 100, 100, message="search_emails: complete")
-        return json.dumps({"query": query, "messages": slim, "count": len(slim)})
+        return json.dumps({"query": query, "messages": models, "count": len(models)})
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"search_emails: http_error status={e.response.status_code}")
         return json.dumps(
@@ -132,7 +128,7 @@ async def list_inbox(ctx: Context, top: int = 25, skip: int = 0) -> str:
     await tool_report_progress(ctx, 10, 100, message="list_inbox: start")
     try:
         await tool_report_progress(ctx, 40, 100, message="list_inbox: calling Graph")
-        data = await client.list_inbox(top=top, skip=skip)
+        data = await client.list_inbox(top=top, skip=skip, select=_LIST_SELECT)
         await tool_report_progress(ctx, 80, 100, message="list_inbox: mapping messages")
         items = data.get("value") or []
         models = [graph_message_to_model(m).model_dump(mode="json", by_alias=True) for m in items]

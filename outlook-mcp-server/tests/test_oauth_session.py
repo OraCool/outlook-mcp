@@ -13,6 +13,7 @@ from outlook_mcp.auth.oauth_session import (
     reset_oauth_session_store_for_tests,
 )
 from outlook_mcp.auth.token_handler import resolve_delegated_graph_access_token
+from outlook_mcp.config import oauth_scope_list
 
 
 @pytest.fixture
@@ -21,6 +22,22 @@ def oauth_settings() -> SimpleNamespace:
         graph_oauth_scopes="Mail.Read offline_access",
         enable_write_operations=False,
     )
+
+
+def test_oauth_scope_list_adds_send_and_readwrite_when_writes_enabled() -> None:
+    s = SimpleNamespace(graph_oauth_scopes="Mail.Read offline_access", enable_write_operations=True)
+    parts = oauth_scope_list(s)
+    assert "Mail.Send" in parts
+    assert "Mail.ReadWrite" in parts
+
+
+def test_oauth_scope_list_does_not_duplicate_readwrite() -> None:
+    s = SimpleNamespace(
+        graph_oauth_scopes="Mail.Read Mail.ReadWrite offline_access",
+        enable_write_operations=True,
+    )
+    parts = oauth_scope_list(s)
+    assert parts.count("Mail.ReadWrite") == 1
 
 
 def test_oauth_session_roundtrip(oauth_settings: SimpleNamespace) -> None:

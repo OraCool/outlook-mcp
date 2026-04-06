@@ -29,7 +29,7 @@ from langgraph_mcp_tester.llm_factory import create_chat_model
 if TYPE_CHECKING:
     from mcp.shared.context import RequestContext
 
-_LLM_CLIENT_INFO = Implementation(name="langgraph-mcp-tester-client", version="0.1.0")
+LLM_MCP_CLIENT_INFO = Implementation(name="langgraph-mcp-tester-client", version="0.1.0")
 _BEARER = "bearer "
 
 
@@ -50,6 +50,26 @@ def _sampling_block_text(msg: SamplingMessage) -> str:
     return "\n".join(parts)
 
 
+def _flatten_ai_message_content(content: Any) -> str:
+    """Use only assistant-visible text blocks (skip thinking / tool blocks)."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict):
+            typ = block.get("type")
+            if typ == "thinking":
+                continue
+            text_val = block.get("text")
+            if isinstance(text_val, str) and typ in (None, "text"):
+                parts.append(text_val)
+        else:
+            parts.append(str(block))
+    return "".join(parts)
+
+
 def _model_display_name(settings: OutlookAgentSettings) -> str:
     prov = settings.llm_provider.strip().lower()
     if prov == "openai":
@@ -60,6 +80,8 @@ def _model_display_name(settings: OutlookAgentSettings) -> str:
 def build_sampling_callback(settings: OutlookAgentSettings):
     """Build an async MCP sampling handler that forwards prompts to the configured LangChain chat model."""
     model = create_chat_model(settings)
+    if settings.llm_provider.strip().lower() == "openai":
+        model = model.bind(response_format={"type": "json_object"})
     label = _model_display_name(settings)
 
     async def _sampling_callback(
@@ -76,16 +98,13 @@ def build_sampling_callback(settings: OutlookAgentSettings):
             else:
                 lc_messages.append(AIMessage(content=text))
 
-        resp = await model.ainvoke(lc_messages)
-        raw = resp.content
-        if isinstance(raw, str):
-            out_text = raw
-        elif isinstance(raw, list):
-            out_text = "".join(
-                str(p.get("text", p)) if isinstance(p, dict) else str(p) for p in raw
-            )
-        else:
-            out_text = str(raw)
+        invoke_kw: dict[str, Any] = {}
+        if params.maxTokens is not None:
+            invoke_kw["max_tokens"] = params.maxTokens
+        if params.temperature is not None:
+            invoke_kw["temperature"] = params.temperature
+        resp = await model.ainvoke(lc_messages, **invoke_kw)
+        out_text = _flatten_ai_message_content(resp.content)
 
         return CreateMessageResult(
             role="assistant",
@@ -135,7 +154,7 @@ async def outlook_mcp_client(
                     write_stream,
                     sampling_callback=cb,
                     logging_callback=_stderr_mcp_logging,
-                    client_info=_LLM_CLIENT_INFO,
+                    client_info=LLM_MCP_CLIENT_INFO,
                 ) as session:
                     await session.initialize()
                     yield session
@@ -156,7 +175,7 @@ async def outlook_mcp_client(
                 write_stream,
                 sampling_callback=cb,
                 logging_callback=_stderr_mcp_logging,
-                client_info=_LLM_CLIENT_INFO,
+                client_info=LLM_MCP_CLIENT_INFO,
             ) as session:
                 await session.initialize()
                 yield session

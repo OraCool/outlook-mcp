@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from outlook_mcp.auth.token_handler import GraphTokenMissingError
-from outlook_mcp.tools.email_extractor import extract_email_data
+from outlook_mcp.tools._email_prompt import BEGIN_UNTRUSTED_EMAIL_JSON
+from outlook_mcp.tools.email_extractor import EXTRACTION_SYSTEM, extract_email_data
 
 _RAW_MESSAGE = {
     "id": "msg-abc",
@@ -69,6 +70,10 @@ async def test_extract_email_data_success() -> None:
     assert data["extraction"]["email_id"] == "msg-abc"
     assert "INV-2024-001" in data["extraction"]["invoice_numbers"]
     assert data["email"]["id"] == "msg-abc"
+
+    kwargs = ctx.session.create_message.await_args.kwargs
+    assert kwargs.get("system_prompt") == EXTRACTION_SYSTEM
+    assert BEGIN_UNTRUSTED_EMAIL_JSON in kwargs["messages"][0].content.text
 
 
 @pytest.mark.asyncio

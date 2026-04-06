@@ -38,12 +38,16 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     async def get_email(message_id: str, ctx: Context) -> str:
-        """Fetch one message by Graph message id."""
+        """Fetch one message by Graph message id (includes full body and bodyPreview)."""
         return await email_reader.get_email(message_id, ctx)
 
     @mcp.tool()
     async def get_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
-        """Fetch messages sharing the same conversationId (thread)."""
+        """Fetch messages sharing the same conversationId (thread).
+
+        Omits the full message body by default; use ``get_email`` for body text.
+        Each item includes ``bodyPreview`` and metadata.
+        """
         return await email_reader.get_thread(conversation_id, ctx, top=top)
 
     @mcp.tool()
@@ -52,6 +56,9 @@ def build_mcp() -> FastMCP:
 
         Microsoft Graph applies the query via ``$search`` on ``/me/messages`` with
         ``ConsistencyLevel: eventual`` (eventual consistency).
+
+        Results omit the full message body by default; use ``get_email`` for body text.
+        Each hit includes ``bodyPreview`` and metadata.
 
         Examples (combine with AND / OR where supported):
         - ``from:alice@contoso.com``
@@ -67,7 +74,11 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     async def list_inbox(ctx: Context, top: int = 25, skip: int = 0) -> str:
-        """List recent Inbox messages."""
+        """List recent Inbox messages.
+
+        Omits the full message body by default; use ``get_email`` for body text.
+        Each item includes ``bodyPreview`` and metadata.
+        """
         return await email_reader.list_inbox(ctx, top=top, skip=skip)
 
     @mcp.tool()
@@ -91,6 +102,29 @@ def build_mcp() -> FastMCP:
     async def categorize_email(message_id: str, ctx: Context) -> str:
         """Classify email via MCP sampling (falls back to raw email if sampling unavailable)."""
         return await email_classifier.categorize_email(message_id, ctx)
+
+    @mcp.tool()
+    async def apply_llm_category_to_email(message_id: str, ctx: Context) -> str:
+        """Classify via MCP sampling, then set Outlook message categories to that label.
+
+        Requires ENABLE_WRITE_OPERATIONS=true and delegated Mail.ReadWrite. Replaces existing
+        categories on the message with the single AR taxonomy label from the classifier (same
+        taxonomy as categorize_email).
+        """
+        return await email_classifier.apply_llm_category_to_email(message_id, ctx)
+
+    @mcp.tool()
+    async def set_message_categories(
+        ctx: Context,
+        message_id: str,
+        categories: list[str],
+    ) -> str:
+        """Set Outlook category tags on a message (replaces existing categories).
+
+        Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite. Use ``apply_llm_category_to_email``
+        to set the category from LLM classification in one step.
+        """
+        return await email_writer.set_message_categories(ctx, message_id, categories)
 
     @mcp.tool()
     async def extract_email_data(message_id: str, ctx: Context) -> str:

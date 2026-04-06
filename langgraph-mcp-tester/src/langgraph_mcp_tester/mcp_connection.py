@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import os
 import shlex
+from typing import Any
 
 from langchain_mcp_adapters.sessions import Connection, StdioConnection, StreamableHttpConnection
-
+from langgraph_mcp_tester.client import LLM_MCP_CLIENT_INFO, build_sampling_callback
 from langgraph_mcp_tester.config import OutlookAgentSettings
+
+
+def _sampling_session_kwargs(settings: OutlookAgentSettings) -> dict[str, Any]:
+    """Forward MCP sampling (LLM classify/extract) to the same model as the ReAct agent."""
+    return {
+        "sampling_callback": build_sampling_callback(settings),
+        "client_info": LLM_MCP_CLIENT_INFO,
+    }
 
 
 def build_outlook_connection(settings: OutlookAgentSettings) -> dict[str, Connection]:
@@ -23,6 +32,7 @@ def build_outlook_connection(settings: OutlookAgentSettings) -> dict[str, Connec
         conn: StreamableHttpConnection = {
             "transport": "streamable_http",
             "url": settings.mcp_url,
+            "session_kwargs": _sampling_session_kwargs(settings),
         }
         if headers:
             conn["headers"] = headers
@@ -41,6 +51,7 @@ def build_outlook_connection(settings: OutlookAgentSettings) -> dict[str, Connec
             "command": command,
             "args": args,
             "env": env,
+            "session_kwargs": _sampling_session_kwargs(settings),
         }
         return {"outlook": stdio}
 

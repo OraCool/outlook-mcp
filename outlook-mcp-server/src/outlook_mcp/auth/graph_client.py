@@ -31,39 +31,52 @@ class GraphMailClient:
             r.raise_for_status()
             return r.json()
 
-    async def list_messages_by_conversation(self, conversation_id: str, top: int = 50) -> dict[str, Any]:
+    async def list_messages_by_conversation(
+        self, conversation_id: str, top: int = 50, *, select: str | None = None
+    ) -> dict[str, Any]:
         # OData single quotes in filter must be doubled
         safe = conversation_id.replace("'", "''")
         filt = f"conversationId eq '{safe}'"
+        params: dict[str, str] = {
+            "$filter": filt,
+            "$top": str(top),
+            "$orderby": "receivedDateTime asc",
+        }
+        if select:
+            params["$select"] = select
         async with self._client() as c:
-            r = await c.get(
-                "/me/messages",
-                params={"$filter": filt, "$top": str(top), "$orderby": "receivedDateTime asc"},
-            )
+            r = await c.get("/me/messages", params=params)
             r.raise_for_status()
             return r.json()
 
-    async def search_messages(self, query: str, top: int = 25) -> dict[str, Any]:
+    async def search_messages(
+        self, query: str, top: int = 25, *, select: str | None = None
+    ) -> dict[str, Any]:
         safe_query = query.replace('"', '\\"')
+        params: dict[str, str] = {"$search": f'"{safe_query}"', "$top": str(top)}
+        if select:
+            params["$select"] = select
         async with self._client() as c:
             r = await c.get(
                 "/me/messages",
-                params={"$search": f'"{safe_query}"', "$top": str(top)},
+                params=params,
                 headers={**self._headers, "ConsistencyLevel": "eventual"},
             )
             r.raise_for_status()
             return r.json()
 
-    async def list_inbox(self, top: int = 25, skip: int = 0) -> dict[str, Any]:
+    async def list_inbox(
+        self, top: int = 25, skip: int = 0, *, select: str | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {
+            "$top": str(top),
+            "$skip": str(skip),
+            "$orderby": "receivedDateTime desc",
+        }
+        if select:
+            params["$select"] = select
         async with self._client() as c:
-            r = await c.get(
-                "/me/mailFolders/Inbox/messages",
-                params={
-                    "$top": str(top),
-                    "$skip": str(skip),
-                    "$orderby": "receivedDateTime desc",
-                },
-            )
+            r = await c.get("/me/mailFolders/Inbox/messages", params=params)
             r.raise_for_status()
             return r.json()
 
@@ -93,3 +106,11 @@ class GraphMailClient:
             r = await c.post("/me/messages", json=payload)
             r.raise_for_status()
             return r.json()
+
+    async def update_message(self, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._client() as c:
+            r = await c.patch(f"/me/messages/{message_id}", json=payload)
+            r.raise_for_status()
+            if r.content:
+                return r.json()
+            return {}

@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from outlook_mcp.auth.token_handler import GraphTokenMissingError
-from outlook_mcp.tools.email_writer import create_draft, send_email
+from outlook_mcp.tools.email_writer import create_draft, send_email, set_message_categories
 
 
 class _SettingsDisabled:
@@ -116,6 +116,38 @@ async def test_send_email_token_missing() -> None:
             result = await send_email(ctx=None, subject="S", body_text="B", to_addresses=["a@b.com"])
     data = json.loads(result)
     assert data["error"] == "missing_token"
+
+
+@pytest.mark.asyncio
+async def test_set_message_categories_write_disabled() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsDisabled()):
+        result = await set_message_categories(ctx=None, message_id="m1", categories=["A"])
+    data = json.loads(result)
+    assert data["error"] == "write_disabled"
+
+
+@pytest.mark.asyncio
+async def test_set_message_categories_validation_empty() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        result = await set_message_categories(ctx=None, message_id="m1", categories=[])
+    data = json.loads(result)
+    assert data["error"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_set_message_categories_success() -> None:
+    mock_client = AsyncMock()
+    mock_client.update_message = AsyncMock(return_value={})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await set_message_categories(ctx=None, message_id="mid-1", categories=["  PAYMENT_PROMISE  "])
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["categories"] == ["PAYMENT_PROMISE"]
+    mock_client.update_message.assert_awaited_once_with(
+        "mid-1",
+        {"categories": ["PAYMENT_PROMISE"]},
+    )
 
 
 @pytest.mark.asyncio

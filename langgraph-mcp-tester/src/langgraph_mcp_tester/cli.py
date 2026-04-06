@@ -27,10 +27,16 @@ async def amain(argv: list[str] | None = None) -> int:
     settings = get_settings()
     model = create_chat_model(settings)
     connections = build_outlook_connection(settings)
-    async with MultiServerMCPClient(connections) as client:
-        tools = await client.get_tools()
-        graph = build_react_graph(model, tools)
-        result = await graph.ainvoke({"messages": [HumanMessage(content=user_text)]})
+    client = MultiServerMCPClient(connections)
+    tools = await client.get_tools()
+    graph = build_react_graph(
+        model,
+        tools,
+        max_llm_input_tokens=settings.agent_max_llm_input_tokens,
+        max_message_chars=settings.agent_max_message_chars,
+        hard_input_token_ceiling=settings.agent_hard_input_token_ceiling,
+    )
+    result = await graph.ainvoke({"messages": [HumanMessage(content=user_text)]})
     messages = result.get("messages", [])
     if messages:
         last = messages[-1]

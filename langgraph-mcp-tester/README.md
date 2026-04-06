@@ -22,11 +22,14 @@ If you prefer pip/venv, `pip install -e ".[dev]"` is also supported.
 
 ## Run
 
-With the MCP server listening on the default URL:
+With the MCP server listening on the default URL, run from **`langgraph-mcp-tester/`** so `pydantic-settings` loads this folder’s `.env` (the path is relative to the process working directory).
 
 ```bash
+cd langgraph-mcp-tester
 uv run langgraph-mcp-tester "List the 5 most recent messages in my inbox"
 ```
+
+Large MCP tool results are clipped and trimmed using your chat model’s tokenizer (`AGENT_MAX_MESSAGE_CHARS`, `AGENT_MAX_LLM_INPUT_TOKENS`, and `AGENT_HARD_INPUT_TOKEN_CEILING` in `.env`).
 
 For **delegated Graph** access over HTTP, set `X_GRAPH_TOKEN` in `.env` to the raw JWT or `Bearer <token>`; it is sent as the `X-Graph-Token` header (see AR mail management ADR).
 

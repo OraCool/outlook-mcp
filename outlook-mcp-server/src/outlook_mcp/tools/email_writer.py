@@ -15,6 +15,66 @@ from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_repo
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
 
+_MAX_MESSAGE_CATEGORIES = 25
+
+
+async def set_message_categories(ctx: Context, message_id: str, categories: list[str]) -> str:
+    """Set Outlook message category tags (delegated ``Mail.ReadWrite``). Replaces the entire ``categories`` list.
+
+    Disabled unless ENABLE_WRITE_OPERATIONS=true.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        await tool_log_info(ctx, "set_message_categories: write_disabled (ENABLE_WRITE_OPERATIONS=false)")
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable set_message_categories (requires Mail.ReadWrite).",
+            }
+        )
+
+    if not categories:
+        return json.dumps({"error": "validation_error", "message": "categories must be a non-empty list."})
+    if len(categories) > _MAX_MESSAGE_CATEGORIES:
+        return json.dumps(
+            {
+                "error": "validation_error",
+                "message": f"At most {_MAX_MESSAGE_CATEGORIES} categories allowed per message.",
+            }
+        )
+    for c in categories:
+        if not isinstance(c, str) or not c.strip():
+            return json.dumps(
+                {"error": "validation_error", "message": "Each category must be a non-empty string."}
+            )
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    trimmed = [c.strip() for c in categories]
+    await tool_log_info(ctx, f"set_message_categories: start message_id={message_id!r} count={len(trimmed)}")
+    await tool_report_progress(ctx, 20, 100, message="set_message_categories: start")
+    try:
+        await tool_report_progress(ctx, 60, 100, message="set_message_categories: calling Graph")
+        await client.update_message(message_id, {"categories": trimmed})
+        await tool_report_progress(ctx, 100, 100, message="set_message_categories: complete")
+        await tool_log_info(ctx, "set_message_categories: Graph PATCH ok")
+        return json.dumps({"ok": True, "message_id": message_id, "categories": trimmed})
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"set_message_categories: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": e.response.text[:2000],
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"set_message_categories: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": str(e)})
+
 
 async def send_email(
     ctx: Context,
