@@ -10,5 +10,8 @@ TOKEN_EXPIRED_PAYLOAD: dict[str, str | int] = {
 MISSING_TOKEN_PAYLOAD: dict[str, str] = {
     "error": "missing_token",
     "code": "ERR_GRAPH_TOKEN_MISSING",
-    "message": "X-Graph-Token header was not provided and no dev/fallback credential is configured.",
+    "message": (
+        "No Graph token: use X-Graph-Token, X-OAuth-Session (after /oauth/login), "
+        "GRAPH_OAUTH_TOKEN_CACHE_PATH (device login), or GRAPH_DEV_TOKEN."
+    ),
 }

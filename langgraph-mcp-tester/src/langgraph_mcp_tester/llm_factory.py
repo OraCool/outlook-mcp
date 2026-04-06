@@ -20,13 +20,13 @@ def create_chat_model(settings: OutlookAgentSettings) -> BaseChatModel:
             raise ValueError(msg)
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=settings.openai_model, api_key=settings.openai_api_key)
+        return ChatOpenAI(model=settings.openai_model, api_key=settings.openai_api_key.get_secret_value())
     if provider in ("anthropic", "claude"):
         if not settings.anthropic_api_key:
             msg = "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic"
             raise ValueError(msg)
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=settings.anthropic_model, api_key=settings.anthropic_api_key)
+        return ChatAnthropic(model=settings.anthropic_model, api_key=settings.anthropic_api_key.get_secret_value())
     msg = f"Unknown LLM_PROVIDER={settings.llm_provider!r}; use openai or anthropic"
     raise UnknownLLMProviderError(msg)

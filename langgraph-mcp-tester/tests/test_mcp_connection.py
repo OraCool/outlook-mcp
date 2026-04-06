@@ -54,3 +54,33 @@ def test_unknown_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     s = OutlookAgentSettings()
     with pytest.raises(ValueError, match="Unknown MCP_TRANSPORT"):
         build_outlook_connection(s)
+
+
+def test_stdio_empty_command_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    monkeypatch.setenv("MCP_STDIO_COMMAND", "   ")
+    s = OutlookAgentSettings()
+    with pytest.raises(ValueError, match="MCP_STDIO_COMMAND is empty"):
+        build_outlook_connection(s)
+
+
+def test_streamable_http_raw_token_no_bearer_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("MCP_TRANSPORT", "streamable_http")
+    monkeypatch.setenv("X_GRAPH_TOKEN", "rawtoken123")
+    s = OutlookAgentSettings()
+    c = build_outlook_connection(s)["outlook"]
+    assert c["headers"]["X-Graph-Token"] == "rawtoken123"
+
+
+def test_stdio_injects_mcp_transport_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    monkeypatch.setenv("MCP_STDIO_COMMAND", "outlook-mcp-server")
+    s = OutlookAgentSettings()
+    c = build_outlook_connection(s)["outlook"]
+    assert c["env"]["MCP_TRANSPORT"] == "stdio"

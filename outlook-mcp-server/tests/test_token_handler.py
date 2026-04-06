@@ -6,6 +6,7 @@ import time
 
 import jwt
 import pytest
+from pydantic import SecretStr
 
 from outlook_mcp.auth.token_handler import (
     GraphTokenExpiredError,
@@ -40,7 +41,10 @@ def test_ensure_not_expired_raises() -> None:
 
 def test_resolve_delegated_token_from_graph_dev_token(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Settings:
-        graph_dev_token = "Bearer abc.def.ghi"
+        graph_dev_token = SecretStr("Bearer abc.def.ghi")
+        graph_oauth_enabled = False
+        graph_oauth_client_id = ""
+        graph_oauth_token_cache_path = None
 
     monkeypatch.setattr("outlook_mcp.config.get_settings", lambda: _Settings())
     token, _ = resolve_delegated_graph_access_token(None)
@@ -50,6 +54,9 @@ def test_resolve_delegated_token_from_graph_dev_token(monkeypatch: pytest.Monkey
 def test_resolve_delegated_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Settings:
         graph_dev_token = None
+        graph_oauth_enabled = False
+        graph_oauth_client_id = ""
+        graph_oauth_token_cache_path = None
 
     monkeypatch.setattr("outlook_mcp.config.get_settings", lambda: _Settings())
     with pytest.raises(GraphTokenMissingError):

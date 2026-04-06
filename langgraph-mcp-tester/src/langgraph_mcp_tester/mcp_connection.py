@@ -16,7 +16,7 @@ def build_outlook_connection(settings: OutlookAgentSettings) -> dict[str, Connec
     if transport == "streamable_http":
         headers: dict[str, str] = {}
         if settings.x_graph_token:
-            tok = settings.x_graph_token.strip()
+            tok = settings.x_graph_token.get_secret_value().strip()
             if tok.lower().startswith("bearer "):
                 tok = tok[7:].strip()
             headers["X-Graph-Token"] = tok

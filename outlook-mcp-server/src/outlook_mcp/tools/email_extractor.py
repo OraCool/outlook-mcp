@@ -15,6 +15,7 @@ from outlook_mcp.tools._common import (
     parse_json_object,
     tool_error_token,
 )
+from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -34,22 +35,30 @@ Do not invent invoice numbers or amounts; only extract what is explicitly presen
 
 async def extract_email_data(message_id: str, ctx: Context) -> str:
     """Fetch the message and use sampling to extract invoice numbers, amounts, dates, payment references."""
+    pid = _preview(message_id)
     try:
         g = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+    await tool_log_info(ctx, f"extract_email_data: start message_id={pid}")
+    await tool_report_progress(ctx, 5, 100, message="extract_email_data: fetching from Graph")
+    try:
         raw = await g.get_message(
             message_id,
             select="id,subject,bodyPreview,body,receivedDateTime,from,conversationId",
         )
         email = graph_message_to_model(raw)
         email_json = email.model_dump(mode="json", by_alias=True)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
-        return json.dumps(tool_error_token(e))
+        await tool_log_info(ctx, f"extract_email_data: graph fetch ok message_id={pid}")
+        await tool_report_progress(ctx, 25, 100, message="extract_email_data: graph fetch done")
     except Exception as e:  # noqa: BLE001
+        await tool_log_warning(ctx, f"extract_email_data: fetch_failed {type(e).__name__}")
         return json.dumps({"error": "fetch_failed", "message": str(e)})
 
     user_prompt = EXTRACTION_PROMPT + "\n\nEmail JSON:\n" + json.dumps(email_json, indent=2)
 
     try:
+        await tool_report_progress(ctx, 60, 100, message="extract_email_data: MCP sampling")
         result = await ctx.session.create_message(
             messages=[
                 SamplingMessage(
@@ -66,6 +75,8 @@ async def extract_email_data(message_id: str, ctx: Context) -> str:
             msg = "sampling email_id does not match requested message_id"
             raise ValueError(msg)
         parsed = ExtractionResult.model_validate(raw_obj)
+        await tool_report_progress(ctx, 100, 100, message="extract_email_data: complete")
+        await tool_log_info(ctx, "extract_email_data: sampling succeeded")
         return json.dumps(
             {
                 "sampling": True,
@@ -76,6 +87,7 @@ async def extract_email_data(message_id: str, ctx: Context) -> str:
             indent=2,
         )
     except Exception as e:  # noqa: BLE001
+        await tool_log_warning(ctx, f"extract_email_data: sampling fallback ({type(e).__name__})")
         return json.dumps(
             {
                 "sampling": False,

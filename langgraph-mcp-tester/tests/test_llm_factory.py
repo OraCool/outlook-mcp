@@ -56,3 +56,11 @@ def test_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     s = OutlookAgentSettings()
     with pytest.raises(UnknownLLMProviderError):
         create_chat_model(s)
+
+
+def test_anthropic_missing_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    s = OutlookAgentSettings()
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        create_chat_model(s)

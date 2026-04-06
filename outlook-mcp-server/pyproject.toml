@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "mcp[cli]>=1.12",
+    "msal>=1.28",
     "msgraph-sdk>=1.0",
     "pyjwt[crypto]>=2.8",
     "httpx>=0.27",
@@ -26,6 +27,7 @@ dev = [
 
 [project.scripts]
 outlook-mcp-server = "outlook_mcp.server:main"
+outlook-mcp-oauth-device = "outlook_mcp.oauth_device:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

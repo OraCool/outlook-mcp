@@ -10,6 +10,7 @@ import httpx
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
 from outlook_mcp.tools._common import make_graph_client, tool_error_token
+from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -26,6 +27,7 @@ async def send_email(
     """Send an email from the signed-in user (delegated ``Mail.Send``). Disabled unless ENABLE_WRITE_OPERATIONS=true."""
     s = get_settings()
     if not s.enable_write_operations:
+        await tool_log_info(ctx, "send_email: write_disabled (ENABLE_WRITE_OPERATIONS=false)")
         return json.dumps(
             {
                 "error": "write_disabled",
@@ -33,6 +35,12 @@ async def send_email(
             }
         )
 
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+    await tool_log_info(ctx, f"send_email: start recipients={len(to_addresses)}")
+    await tool_report_progress(ctx, 20, 100, message="send_email: start")
     payload = {
         "message": {
             "subject": subject,
@@ -42,12 +50,13 @@ async def send_email(
         "saveToSentItems": save_to_sent_items,
     }
     try:
-        client = make_graph_client(ctx)
+        await tool_report_progress(ctx, 60, 100, message="send_email: calling Graph sendMail")
         await client.send_mail(payload)
+        await tool_report_progress(ctx, 100, 100, message="send_email: complete")
+        await tool_log_info(ctx, "send_email: Graph accepted message")
         return json.dumps({"ok": True, "message": "Message accepted by Graph sendMail."})
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
-        return json.dumps(tool_error_token(e))
     except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"send_email: http_error status={e.response.status_code}")
         return json.dumps(
             {
                 "error": "http_error",
@@ -67,6 +76,7 @@ async def create_draft(
     """Create a draft message in the signed-in user's Drafts folder."""
     s = get_settings()
     if not s.enable_write_operations:
+        await tool_log_info(ctx, "create_draft: write_disabled (ENABLE_WRITE_OPERATIONS=false)")
         return json.dumps(
             {
                 "error": "write_disabled",
@@ -74,6 +84,12 @@ async def create_draft(
             }
         )
 
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+    await tool_log_info(ctx, "create_draft: start")
+    await tool_report_progress(ctx, 20, 100, message="create_draft: start")
     msg: dict = {
         "subject": subject,
         "body": {"contentType": content_type, "content": body_text},
@@ -82,12 +98,13 @@ async def create_draft(
         msg["toRecipients"] = [{"emailAddress": {"address": a}} for a in to_addresses]
 
     try:
-        client = make_graph_client(ctx)
+        await tool_report_progress(ctx, 60, 100, message="create_draft: calling Graph")
         created = await client.create_message_draft(msg)
+        await tool_report_progress(ctx, 100, 100, message="create_draft: complete")
+        await tool_log_info(ctx, "create_draft: draft created")
         return json.dumps({"ok": True, "message": created}, indent=2)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
-        return json.dumps(tool_error_token(e))
     except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"create_draft: http_error status={e.response.status_code}")
         return json.dumps(
             {
                 "error": "http_error",

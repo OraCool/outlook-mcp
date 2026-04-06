@@ -54,8 +54,11 @@ def graph_message_to_model(raw: dict[str, Any]) -> EmailMessage:
 
 
 def make_graph_client(ctx: Context | None) -> GraphMailClient:
+    from outlook_mcp.config import get_settings
+
     token, _ = resolve_delegated_graph_access_token(ctx)
-    return GraphMailClient(token)
+    timeout = float(get_settings().graph_http_timeout_seconds)
+    return GraphMailClient(token, http_timeout=timeout)
 
 
 def tool_error_token(e: Exception) -> dict[str, Any]:
@@ -87,7 +90,10 @@ def parse_json_object(text: str) -> dict[str, Any]:
     if start == -1 or end == -1 or end <= start:
         raise ValueError("No JSON object found in model response")
 
-    parsed = json.loads(candidate[start : end + 1])
+    try:
+        parsed = json.loads(candidate[start : end + 1])
+    except json.JSONDecodeError as err:
+        raise ValueError(f"No valid JSON object found in model response: {err}") from err
     if not isinstance(parsed, dict):
         raise ValueError("Expected a JSON object")
     return parsed

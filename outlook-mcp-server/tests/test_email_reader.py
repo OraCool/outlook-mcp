@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from outlook_mcp.auth.graph_client import GraphMailClient
+from outlook_mcp.auth.token_handler import GraphTokenMissingError
 from outlook_mcp.tools._common import graph_message_to_model
+from outlook_mcp.tools.email_reader import list_inbox, list_master_categories
 
 
 def test_graph_message_to_model_minimal() -> None:
@@ -49,3 +54,90 @@ async def test_graph_mail_client_get_message(mock_async_client_class: MagicMock)
     out = await gc.get_message("mid", select="id,subject")
     assert out["id"] == "mid"
     mock_instance.get.assert_awaited()
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_master_categories(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(
+        return_value={
+            "value": [
+                {"id": "cat-1", "displayName": "Important", "color": "preset0"},
+            ],
+        },
+    )
+
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    out = await gc.list_master_categories()
+    assert len(out["value"]) == 1
+    assert out["value"][0]["displayName"] == "Important"
+    mock_instance.get.assert_awaited_once_with(
+        "/me/outlook/masterCategories",
+        params={"$top": "500"},
+    )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_master_categories_with_top(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"value": []})
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    await gc.list_master_categories(top=25)
+    mock_instance.get.assert_awaited_once_with(
+        "/me/outlook/masterCategories",
+        params={"$top": "25"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_master_categories_tool_returns_json() -> None:
+    ctx = MagicMock()
+    mock_client = MagicMock()
+    mock_client.list_master_categories = AsyncMock(
+        return_value={"value": [{"id": "x", "displayName": "Blue", "color": "preset1"}]},
+    )
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        result = await list_master_categories(ctx)
+    data = json.loads(result)
+    assert data["count"] == 1
+    assert data["categories"][0]["displayName"] == "Blue"
+
+
+@pytest.mark.asyncio
+async def test_list_inbox_missing_token_returns_despite_slow_mcp_notify() -> None:
+    """Inspector-style clients may stall on log/progress; tools must still return errors."""
+
+    async def slow_notify(*_a: object, **_k: object) -> None:
+        await asyncio.sleep(10.0)
+
+    ctx = MagicMock()
+    ctx.log = AsyncMock(side_effect=slow_notify)
+    ctx.report_progress = AsyncMock(side_effect=slow_notify)
+
+    with patch(
+        "outlook_mcp.tools.email_reader.make_graph_client",
+        side_effect=GraphTokenMissingError("no token"),
+    ):
+        t0 = time.monotonic()
+        result = await list_inbox(ctx, top=5, skip=0)
+        elapsed = time.monotonic() - t0
+
+    assert elapsed < 1.0, "list_inbox should not block on stalled MCP notifications"
+    data = json.loads(result)
+    assert data["error"] == "missing_token"

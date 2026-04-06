@@ -15,6 +15,7 @@ from outlook_mcp.tools._common import (
     parse_json_object,
     tool_error_token,
 )
+from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -56,8 +57,14 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
 
     If the client does not support sampling, returns the email JSON plus a note to classify upstream.
     """
+    pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+    await tool_log_info(ctx, f"categorize_email: start message_id={pid}")
+    await tool_report_progress(ctx, 5, 100, message="categorize_email: fetching from Graph")
+    try:
         raw = await client.get_message(
             message_id,
             select=(
@@ -67,9 +74,10 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
         )
         email = graph_message_to_model(raw)
         email_json = email.model_dump(mode="json", by_alias=True)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
-        return json.dumps(tool_error_token(e))
+        await tool_log_info(ctx, f"categorize_email: graph fetch ok message_id={pid}")
+        await tool_report_progress(ctx, 25, 100, message="categorize_email: graph fetch done")
     except Exception as e:  # noqa: BLE001
+        await tool_log_warning(ctx, f"categorize_email: fetch_failed {type(e).__name__}")
         return json.dumps({"error": "fetch_failed", "message": str(e)})
 
     user_prompt = (
@@ -80,6 +88,7 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
     )
 
     try:
+        await tool_report_progress(ctx, 60, 100, message="categorize_email: MCP sampling")
         result = await ctx.session.create_message(
             messages=[
                 SamplingMessage(
@@ -96,6 +105,8 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
             msg = "sampling email_id does not match requested message_id"
             raise ValueError(msg)
         parsed = ClassificationResult.model_validate(raw_obj)
+        await tool_report_progress(ctx, 100, 100, message="categorize_email: complete")
+        await tool_log_info(ctx, "categorize_email: sampling succeeded")
         return json.dumps(
             {
                 "sampling": True,
@@ -106,6 +117,7 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
             indent=2,
         )
     except Exception as e:  # noqa: BLE001 — client may not support sampling
+        await tool_log_warning(ctx, f"categorize_email: sampling fallback ({type(e).__name__})")
         return json.dumps(
             {
                 "sampling": False,

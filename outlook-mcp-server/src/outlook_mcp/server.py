@@ -16,8 +16,11 @@ def build_mcp() -> FastMCP:
         name="outlook-mcp",
         instructions=(
             "Microsoft Outlook / Graph mail tools for AR Email Management. "
-            "Pass the user's delegated Graph token via the X-Graph-Token HTTP header "
-            "(Streamable HTTP) or rely on GRAPH_DEV_TOKEN / Azure client credentials for development."
+            "Auth: X-Graph-Token header; or enable OAuth and use GET /oauth/login then X-OAuth-Session; "
+            "or GRAPH_OAUTH_TOKEN_CACHE_PATH after outlook-mcp-oauth-device; or GRAPH_DEV_TOKEN for local dev. "
+            "search_emails: the query parameter is KQL (Keyword Query Language) against the signed-in user's mailbox; "
+            "Graph uses eventual consistency for this API. Reference: "
+            "https://learn.microsoft.com/en-us/graph/search-query-parameter"
         ),
         host=s.mcp_host,
         port=s.mcp_port,
@@ -27,6 +30,11 @@ def build_mcp() -> FastMCP:
     @mcp.custom_route("/health", methods=["GET"])
     async def health_check(_request: Request) -> JSONResponse:  # noqa: ARG001
         return JSONResponse({"status": "ok", "service": "outlook-mcp"})
+
+    if s.graph_oauth_enabled and s.graph_oauth_client_id.strip():
+        from outlook_mcp.auth.oauth_routes import register_oauth_routes
+
+        register_oauth_routes(mcp)
 
     @mcp.tool()
     async def get_email(message_id: str, ctx: Context) -> str:
@@ -40,7 +48,21 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
-        """Search mailbox with KQL (Graph $search + ConsistencyLevel: eventual)."""
+        """Search the signed-in user's mailbox using KQL (Keyword Query Language).
+
+        Microsoft Graph applies the query via ``$search`` on ``/me/messages`` with
+        ``ConsistencyLevel: eventual`` (eventual consistency).
+
+        Examples (combine with AND / OR where supported):
+        - ``from:alice@contoso.com``
+        - ``subject:invoice``
+        - ``received:2024-01-01..2024-12-31``
+        - ``hasattachment:yes``
+        - ``from:bob@contoso.com AND subject:payment``
+
+        Full syntax and limitations:
+        https://learn.microsoft.com/en-us/graph/search-query-parameter
+        """
         return await email_reader.search_emails(query, ctx, top=top)
 
     @mcp.tool()
@@ -52,6 +74,18 @@ def build_mcp() -> FastMCP:
     async def get_attachments(message_id: str, ctx: Context) -> str:
         """List attachment metadata for a message."""
         return await email_reader.get_attachments(message_id, ctx)
+
+    @mcp.tool()
+    async def list_master_categories(ctx: Context, top: int = 500) -> str:
+        """List Outlook master categories (display name and color) for the signed-in user.
+
+        Not the same as message ``categories`` tags or the AR email classifier taxonomy.
+        Requires delegated ``MailboxSettings.Read`` (add to app registration / token scopes).
+        ``top`` is Graph ``$top`` (default 500).
+
+        https://learn.microsoft.com/en-us/graph/api/outlookuser-list-mastercategories
+        """
+        return await email_reader.list_master_categories(ctx, top=top)
 
     @mcp.tool()
     async def categorize_email(message_id: str, ctx: Context) -> str:
