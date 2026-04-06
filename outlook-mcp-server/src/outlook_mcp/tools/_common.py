@@ -177,9 +177,31 @@ def _object_slices(s: str) -> list[str]:
     return out
 
 
+_EMPTY_SAMPLING_RESPONSE = (
+    "Empty model response from MCP sampling. When using MCP Inspector, paste a single JSON "
+    "object as the assistant reply when completing sampling/createMessage."
+)
+
+
+def _safe_error_preview(raw: str, *, max_chars: int = 100) -> str | None:
+    """Short, single-line snippet for parse errors — skip likely email echo or huge blobs."""
+    if not raw or len(raw) > 280:
+        return None
+    if "BEGIN_UNTRUSTED_EMAIL_JSON" in raw or "END_UNTRUSTED_EMAIL_JSON" in raw:
+        return None
+    if "body_content" in raw:
+        return None
+    one_line = raw.replace("\n", " ").replace("\r", " ").strip()
+    if len(one_line) > max_chars:
+        one_line = one_line[: max_chars - 3].rstrip() + "..."
+    return one_line
+
+
 def parse_json_object(text: str) -> dict[str, Any]:
     """Parse a JSON object from raw model text (plain JSON, fenced block, or embedded object)."""
     raw = text.strip()
+    if not raw:
+        raise ValueError(_EMPTY_SAMPLING_RESPONSE)
     candidate = _strip_outer_fence(raw)
 
     tried: list[str] = []
@@ -211,7 +233,18 @@ def parse_json_object(text: str) -> dict[str, Any]:
             return parsed
 
     if "{" not in raw:
-        raise ValueError("No JSON object found in model response")
+        msg = (
+            "No JSON object found in model response (response contains no `{` character). "
+            "When using MCP Inspector, paste one JSON object matching the system prompt."
+        )
+        prev = _safe_error_preview(raw)
+        if prev:
+            msg = f"{msg} Preview: {prev!r}"
+        raise ValueError(msg)
     detail = str(last_err) if last_err else "response was not a JSON object"
-    err = ValueError(f"No valid JSON object found in model response: {detail}")
+    msg = f"No valid JSON object found in model response: {detail}"
+    prev = _safe_error_preview(raw)
+    if prev:
+        msg = f"{msg} Preview: {prev!r}"
+    err = ValueError(msg)
     raise err from last_err

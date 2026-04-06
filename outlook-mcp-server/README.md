@@ -104,6 +104,14 @@ In the Inspector sidebar:
 
 Without a running HTTP server on that URL, the Inspector shows **connection refused**.
 
+#### Sampling / AI tools in the Inspector
+
+Tools **`categorize_email`**, **`extract_email_data`**, and **`apply_llm_category_to_email`** call the MCP host via **`sampling/createMessage`**. The client must return **assistant text that contains one JSON object** matching the system prompt for that call.
+
+- **MCP Inspector (manual sampling):** When the UI asks you to complete sampling, you must **paste a valid JSON object** (not an empty reply and not conversational prose alone). The classification prompt expects fields such as `email_id`, `category`, `confidence`, `intent`, `reasoning`, `extracted_data`, and `escalation`, as described in the system prompt shown in the sampling request. An empty or non-JSON reply leads to errors like **`No JSON object found`** or **`Empty model response from MCP sampling`**.
+- **Automated clients** (e.g. **langgraph-mcp-tester** with a `sampling_callback` that calls an LLM, optionally with JSON response format) handle this without manual paste.
+- **If sampling fails**, those tools return **`sampling: false`** (or an error for **`apply_llm_category_to_email`**) plus **`hint`** text and the **full message JSON** from Microsoft Graph (`email`), including raw `body_content` when the message is HTML. That payload is **intentional**: it lets you or an upstream model classify the message outside MCP sampling. It is **not** the same as the truncated, HTML-stripped text sent inside the sampling prompt.
+
 **Troubleshooting:** If a tool is missing from the Inspector list, **disconnect and reconnect** after upgrading. Some Inspector versions drop tools whose input schema uses **`anyOf` / nullable types**; `list_master_categories` uses a plain integer **`top`** (default 500, Graph **`$top`**) so its schema matches tools like **`list_inbox`**. Confirm the running server is this repo: `cd outlook-mcp-server && uv run python -c "from outlook_mcp.server import mcp_app; print([t.name for t in mcp_app._tool_manager.list_tools()])"`.
 
 ## Docker
@@ -210,4 +218,4 @@ uv run pytest
 - [Microsoft Graph Mail API overview](https://learn.microsoft.com/en-us/graph/api/resources/mail-api-overview?view=graph-rest-1.0)
 - [Use the $search query parameter (mailbox / KQL)](https://learn.microsoft.com/en-us/graph/search-query-parameter)
 - [List masterCategories](https://learn.microsoft.com/en-us/graph/api/outlookuser-list-mastercategories)
-- AR architecture: `../ar-mail-management/` (ADR-005, ADR-006)
+- If you maintain companion architecture docs (for example ADRs for a gateway that injects `X-Graph-Token`), align OAuth scopes and transport choices with those decisions.

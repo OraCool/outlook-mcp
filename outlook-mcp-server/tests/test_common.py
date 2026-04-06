@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from unittest.mock import MagicMock
 
 from mcp.types import CreateMessageResult, TextContent
@@ -64,3 +65,57 @@ def test_sampling_response_text_list_of_blocks() -> None:
         TextContent(type="text", text=', "category": "UNCLASSIFIED"}'),
     ]
     assert sampling_response_text(r) == '{"email_id": "x"\n, "category": "UNCLASSIFIED"}'
+
+
+def test_sampling_response_text_dict_text_blocks() -> None:
+    """Wire-style content blocks (e.g. some MCP clients) as plain dicts."""
+    r = MagicMock()
+    r.content = [
+        {"type": "text", "text": '{"email_id": "y"'},
+        {"type": "text", "text": ', "category": "UNCLASSIFIED"}'},
+    ]
+    assert sampling_response_text(r) == '{"email_id": "y"\n, "category": "UNCLASSIFIED"}'
+
+
+def test_parse_json_object_empty_raises() -> None:
+    with pytest.raises(ValueError, match="Empty model response from MCP sampling"):
+        parse_json_object("")
+    with pytest.raises(ValueError, match="Empty model response from MCP sampling"):
+        parse_json_object("   \n\t  ")
+
+
+def test_parse_json_object_no_brace_includes_preview() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        parse_json_object("Not JSON at all")
+    assert "no `{` character" in str(exc_info.value)
+    assert "Preview:" in str(exc_info.value)
+    assert "Not JSON at all" in str(exc_info.value)
+
+
+def test_parse_json_object_no_brace_omits_preview_for_body_content_marker() -> None:
+    raw = "The assistant echoed body_content without JSON braces"
+    with pytest.raises(ValueError) as exc_info:
+        parse_json_object(raw)
+    assert "Preview:" not in str(exc_info.value)
+
+
+def test_parse_json_object_no_brace_omits_preview_when_too_long() -> None:
+    raw = "x" * 400
+    with pytest.raises(ValueError) as exc_info:
+        parse_json_object(raw)
+    assert "Preview:" not in str(exc_info.value)
+
+
+def test_parse_json_object_invalid_json_includes_preview_when_safe() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        parse_json_object('{"broken": ')
+    msg = str(exc_info.value)
+    assert "No valid JSON object found" in msg
+    assert "Preview:" in msg
+
+
+def test_parse_json_object_invalid_json_omits_preview_for_long_response() -> None:
+    raw = "{" + ("x" * 300)
+    with pytest.raises(ValueError) as exc_info:
+        parse_json_object(raw)
+    assert "Preview:" not in str(exc_info.value)

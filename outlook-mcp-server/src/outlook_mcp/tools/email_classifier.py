@@ -40,7 +40,7 @@ ClassifyViaSamplingResult = (
     | tuple[Literal["sampling_failed"], str, dict[str, Any]]
 )
 
-# Aligned with ar-mail-management/prompts/EmailClassifier.md output taxonomy
+# Category strings match the product email-classifier taxonomy (adjust if your deployment differs).
 CLASSIFICATION_SYSTEM = """You are an AR Email Classification Specialist. Classify the email into exactly one category.
 
 Allowed categories (use the exact string):

@@ -1,4 +1,29 @@
 ar-mail-management
 .history
+
+# Local env and secrets (each package also ignores `.env` in its own tree)
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Python (repo root and stray artifacts)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
 outlook-mcp-server/.venv/
 langgraph-mcp-tester/.venv/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
