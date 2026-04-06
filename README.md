@@ -90,7 +90,7 @@ Avoid long-lived PyPI passwords in GitHub:
 
 1. In [PyPI](https://pypi.org/manage/account/publishing/) (or TestPyPI for a dry run), add a **pending** trusted publisher: **GitHub** as the provider, owner **`OraCool`**, repository name (e.g. **`outlook-mcp`**), workflow **`publish-pypi.yml`**, environment name **leave empty** unless you create a matching [GitHub Environment](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) and configure the same name on PyPI.
 2. Run **Publish to PyPI** once (tag or `workflow_dispatch`). A successful OIDC upload **creates** the PyPI project if it does not exist yet.
-3. **Fallback:** add a repository secret **`UV_PUBLISH_TOKEN`** (PyPI API token) and set `UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}` in the publish job only if you are not using trusted publishing.
+3. **API token (used by default in this repo):** add a repository secret **`PYPI_API_TOKEN`** (PyPI API token with upload scope). The **Publish to PyPI** workflow sets `UV_PUBLISH_TOKEN` from that secret and runs `uv publish --trusted-publishing never` so uploads do not rely on OIDC.
 
 Details: [PyPI trusted publishers](https://docs.pypi.org/trusted-publishers/), [`uv publish`](https://docs.astral.sh/uv/guides/package/#publishing-your-package).
 

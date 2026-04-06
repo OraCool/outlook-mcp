@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   publish:
@@ -31,4 +30,6 @@ jobs:
 
       - name: Publish to PyPI
         working-directory: outlook-mcp-server
-        run: uv publish --trusted-publishing always
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish --trusted-publishing never
