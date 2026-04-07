@@ -37,6 +37,10 @@ PyPI = "https://pypi.org/project/outlook-multi-tenant-mcp/"
 "Bug Tracker" = "https://github.com/OraCool/outlook-mcp/issues"
 
 [project.optional-dependencies]
+pii = [
+    "presidio-analyzer>=2.2",
+    "spacy>=3.7",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

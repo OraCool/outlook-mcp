@@ -27,7 +27,17 @@ jobs:
 
       - name: Sync dependencies
         working-directory: ${{ matrix.package }}
-        run: uv sync --extra dev
+        run: |
+          if [ "${{ matrix.package }}" = "outlook-mcp-server" ]; then
+            uv sync --extra dev --extra pii
+          else
+            uv sync --extra dev
+          fi
+
+      - name: Download spaCy model (outlook-mcp-server PII tests)
+        if: matrix.package == 'outlook-mcp-server'
+        working-directory: ${{ matrix.package }}
+        run: uv run python -m spacy download en_core_web_sm
 
       - name: Run tests
         working-directory: ${{ matrix.package }}

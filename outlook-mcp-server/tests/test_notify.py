@@ -38,6 +38,16 @@ async def test_tool_log_info_calls_ctx_log() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_log_info_redacts_email() -> None:
+    ctx = MagicMock()
+    ctx.log = AsyncMock()
+    await tool_log_info(ctx, "user leaked user@example.com in log", logger_name="test_logger")
+    call_msg = ctx.log.call_args[0][1]
+    assert "user@example.com" not in call_msg
+    assert "[EMAIL_REDACTED]" in call_msg
+
+
+@pytest.mark.asyncio
 async def test_tool_report_progress_calls_ctx() -> None:
     ctx = MagicMock()
     ctx.report_progress = AsyncMock()

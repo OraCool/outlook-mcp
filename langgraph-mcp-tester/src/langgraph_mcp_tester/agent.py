@@ -16,7 +16,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "You help the user work with Microsoft Outlook mail through MCP tools. "
     "Use tools to read, search, classify, or extract data from mail; do not claim you "
     "accessed mail without calling a tool. Send or draft email only when the user asks "
-    "and only if those tools exist (server may disable writes)."
+    "and only if those tools exist (server may disable writes). "
+    "When summarizing tool results, match the tool output JSON: for apply_llm_category_to_email "
+    "or set_message_categories, only say categories were applied if the tool returned "
+    "\"ok\": true (or equivalent success); if the tool returned error, write_disabled, "
+    "classification_failed, or http_error, say that explicitly—do not invent success."
 )
 
 _TRUNCATION_SUFFIX = "\n\n...(truncated for LLM context)"

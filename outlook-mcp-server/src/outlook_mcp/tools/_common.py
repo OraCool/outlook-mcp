@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 from typing import TYPE_CHECKING, Any
@@ -67,13 +68,83 @@ def make_graph_client(ctx: Context | None) -> GraphMailClient:
     return GraphMailClient(token, http_timeout=timeout)
 
 
+_EMAIL_LIKE_RE = re.compile(
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+)
+
+
+def sanitize_client_error_message(message: str, max_len: int = 500) -> str:
+    """Truncate and scrub likely PII from error text returned to clients or logs."""
+    if not message:
+        return message
+    s = message.strip().replace("\n", " ").replace("\r", " ")
+    if len(s) > max_len:
+        s = s[: max_len - 3].rstrip() + "..."
+    return _EMAIL_LIKE_RE.sub("[EMAIL_REDACTED]", s)
+
+
+def minimize_email_response(email_json: dict[str, Any]) -> dict[str, Any]:
+    """Return a shallow-deep copy of email JSON suitable for tool responses (no body_content)."""
+    keys = (
+        "id",
+        "subject",
+        "body_preview",
+        "from",
+        "sender",
+        "to_recipients",
+        "conversation_id",
+        "received_date_time",
+        "sent_date_time",
+        "internet_message_id",
+        "categories",
+        "is_read",
+        "has_attachments",
+    )
+    out: dict[str, Any] = {}
+    for k in keys:
+        if k in email_json:
+            out[k] = copy.deepcopy(email_json[k])
+    bp = out.get("body_preview")
+    if isinstance(bp, str) and len(bp) > 512:
+        out["body_preview"] = bp[:509] + "..."
+    subj = out.get("subject")
+    if isinstance(subj, str) and len(subj) > 256:
+        out["subject"] = subj[:253] + "..."
+    return out
+
+
+def email_json_for_tool_response(email_json: dict[str, Any], settings: Any) -> dict[str, Any]:
+    """Full / minimal / redacted email payload for MCP tool JSON (see ``pii_response_level``)."""
+    from outlook_mcp.pii.redactor import redact_email_json
+
+    level = (getattr(settings, "pii_response_level", None) or "full").lower().strip()
+    if level not in ("full", "minimal", "redacted"):
+        level = "full"
+    if level == "full":
+        return copy.deepcopy(email_json)
+    minimal = minimize_email_response(email_json)
+    if level == "minimal":
+        return minimal
+    return redact_email_json(
+        minimal,
+        enabled=True,
+        strategy=getattr(settings, "pii_redaction_strategy", "pseudonymize"),
+        entities_csv=getattr(
+            settings,
+            "pii_entities",
+            "EMAIL_ADDRESS,PERSON,PHONE_NUMBER,IBAN_CODE,CREDIT_CARD,IP_ADDRESS,LOCATION",
+        ),
+        deterministic_fallback=True,
+    )
+
+
 def tool_error_token(e: Exception) -> dict[str, Any]:
     """Stable JSON error payload for token problems or generic Graph failures."""
     if isinstance(e, GraphTokenExpiredError):
         return dict(TOKEN_EXPIRED_PAYLOAD)
     if isinstance(e, GraphTokenMissingError):
         return dict(MISSING_TOKEN_PAYLOAD)
-    return {"error": "graph_error", "message": str(e)}
+    return {"error": "graph_error", "message": sanitize_client_error_message(str(e))}
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)

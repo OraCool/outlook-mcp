@@ -11,10 +11,13 @@ from outlook_mcp.auth.graph_client import GraphMailClient
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
 from outlook_mcp.models.email import ClassificationResult
+from outlook_mcp.pii.redactor import redact_email_json_if_enabled
 from outlook_mcp.tools._common import (
+    email_json_for_tool_response,
     graph_message_to_model,
     make_graph_client,
     parse_json_object,
+    sanitize_client_error_message,
     sampling_create_message,
     sampling_response_text,
     tool_error_token,
@@ -95,6 +98,7 @@ async def _classify_message_via_sampling(
         return ("fetch_failed", str(e))
 
     safe_email_json = sanitize_email_json_for_prompt(email_json)
+    safe_email_json = redact_email_json_if_enabled(safe_email_json)
     user_text = build_untrusted_email_user_text(message_id, safe_email_json)
 
     try:
@@ -140,15 +144,18 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
     await tool_log_info(ctx, f"categorize_email: start message_id={pid}")
     out = await _classify_message_via_sampling(message_id, ctx, client, log_prefix="categorize_email")
     if out[0] == "fetch_failed":
-        return json.dumps({"error": "fetch_failed", "message": out[1]})
+        return json.dumps(
+            {"error": "fetch_failed", "message": sanitize_client_error_message(out[1])},
+        )
+    settings = get_settings()
     if out[0] == "sampling_failed":
         _, err, email_json = out
         return json.dumps(
             {
                 "sampling": False,
-                "sampling_error": err,
+                "sampling_error": sanitize_client_error_message(err),
                 "hint": "Classify this email using the EmailClassifier assistant in LLM.",
-                "email": email_json,
+                "email": email_json_for_tool_response(email_json, settings),
             },
             indent=2,
         )
@@ -158,7 +165,7 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
             "sampling": True,
             "model": model,
             "classification": parsed.model_dump(mode="json"),
-            "email": email_json,
+            "email": email_json_for_tool_response(email_json, settings),
         },
         indent=2,
     )
@@ -179,17 +186,20 @@ async def apply_llm_category_to_email(message_id: str, ctx: Context) -> str:
     out = await _classify_message_via_sampling(
         message_id, ctx, client, log_prefix="apply_llm_category_to_email"
     )
+    settings = get_settings()
     if out[0] == "fetch_failed":
-        return json.dumps({"error": "fetch_failed", "message": out[1]})
+        return json.dumps(
+            {"error": "fetch_failed", "message": sanitize_client_error_message(out[1])},
+        )
     if out[0] == "sampling_failed":
         _, err, email_json = out
         return json.dumps(
             {
                 "error": "classification_failed",
-                "sampling_error": err,
+                "sampling_error": sanitize_client_error_message(err),
                 "hint": "LLM classification is required before applying a category. "
                 "Fix sampling or use categorize_email, then set categories manually.",
-                "email": email_json,
+                "email": email_json_for_tool_response(email_json, settings),
             },
             indent=2,
         )
@@ -204,7 +214,7 @@ async def apply_llm_category_to_email(message_id: str, ctx: Context) -> str:
             "categories": apply_data["categories"],
             "classification": parsed.model_dump(mode="json"),
             "model": model,
-            "email": email_json,
+            "email": email_json_for_tool_response(email_json, settings),
         },
         indent=2,
     )

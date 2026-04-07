@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING
 import httpx
 
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
-from outlook_mcp.tools._common import graph_message_to_model, make_graph_client, tool_error_token
+from outlook_mcp.config import get_settings
+from outlook_mcp.tools._common import (
+    email_json_for_tool_response,
+    graph_message_to_model,
+    make_graph_client,
+    sanitize_client_error_message,
+    tool_error_token,
+)
 from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
@@ -39,19 +46,25 @@ async def get_email(message_id: str, ctx: Context) -> str:
         await tool_report_progress(ctx, 80, 100, message="get_email: mapping response")
         model = graph_message_to_model(raw)
         await tool_report_progress(ctx, 100, 100, message="get_email: complete")
-        return json.dumps(model.model_dump(mode="json", by_alias=True), indent=2)
+        payload = email_json_for_tool_response(
+            model.model_dump(mode="json", by_alias=True),
+            get_settings(),
+        )
+        return json.dumps(payload, indent=2)
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"get_email: http_error status={e.response.status_code}")
         return json.dumps(
             {
                 "error": "http_error",
                 "status_code": e.response.status_code,
-                "message": e.response.text[:2000],
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
             }
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"get_email: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps(
+            {"error": "network_error", "message": sanitize_client_error_message(str(e))},
+        )
 
 
 async def get_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
@@ -70,17 +83,27 @@ async def get_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
         )
         await tool_report_progress(ctx, 80, 100, message="get_thread: mapping messages")
         items = data.get("value") or []
-        models = [graph_message_to_model(m).model_dump(mode="json", by_alias=True) for m in items]
+        settings = get_settings()
+        models = [
+            email_json_for_tool_response(graph_message_to_model(m).model_dump(mode="json", by_alias=True), settings)
+            for m in items
+        ]
         await tool_report_progress(ctx, 100, 100, message="get_thread: complete")
         return json.dumps({"conversation_id": conversation_id, "messages": models, "count": len(models)})
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"get_thread: http_error status={e.response.status_code}")
         return json.dumps(
-            {"error": "http_error", "status_code": e.response.status_code, "message": e.response.text[:2000]}
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"get_thread: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps(
+            {"error": "network_error", "message": sanitize_client_error_message(str(e))},
+        )
 
 
 async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
@@ -105,17 +128,27 @@ async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
         data = await client.search_messages(query, top=top, select=_LIST_SELECT)
         await tool_report_progress(ctx, 80, 100, message="search_emails: mapping results")
         items = data.get("value") or []
-        models = [graph_message_to_model(m).model_dump(mode="json", by_alias=True) for m in items]
+        settings = get_settings()
+        models = [
+            email_json_for_tool_response(graph_message_to_model(m).model_dump(mode="json", by_alias=True), settings)
+            for m in items
+        ]
         await tool_report_progress(ctx, 100, 100, message="search_emails: complete")
         return json.dumps({"query": query, "messages": models, "count": len(models)})
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"search_emails: http_error status={e.response.status_code}")
         return json.dumps(
-            {"error": "http_error", "status_code": e.response.status_code, "message": e.response.text[:2000]}
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"search_emails: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps(
+            {"error": "network_error", "message": sanitize_client_error_message(str(e))},
+        )
 
 
 async def list_inbox(ctx: Context, top: int = 25, skip: int = 0) -> str:
@@ -131,17 +164,27 @@ async def list_inbox(ctx: Context, top: int = 25, skip: int = 0) -> str:
         data = await client.list_inbox(top=top, skip=skip, select=_LIST_SELECT)
         await tool_report_progress(ctx, 80, 100, message="list_inbox: mapping messages")
         items = data.get("value") or []
-        models = [graph_message_to_model(m).model_dump(mode="json", by_alias=True) for m in items]
+        settings = get_settings()
+        models = [
+            email_json_for_tool_response(graph_message_to_model(m).model_dump(mode="json", by_alias=True), settings)
+            for m in items
+        ]
         await tool_report_progress(ctx, 100, 100, message="list_inbox: complete")
         return json.dumps({"messages": models, "count": len(models), "top": top, "skip": skip})
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"list_inbox: http_error status={e.response.status_code}")
         return json.dumps(
-            {"error": "http_error", "status_code": e.response.status_code, "message": e.response.text[:2000]}
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"list_inbox: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps(
+            {"error": "network_error", "message": sanitize_client_error_message(str(e))},
+        )
 
 
 async def get_attachments(message_id: str, ctx: Context) -> str:
@@ -161,11 +204,17 @@ async def get_attachments(message_id: str, ctx: Context) -> str:
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"get_attachments: http_error status={e.response.status_code}")
         return json.dumps(
-            {"error": "http_error", "status_code": e.response.status_code, "message": e.response.text[:2000]}
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"get_attachments: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps(
+            {"error": "network_error", "message": sanitize_client_error_message(str(e))},
+        )
 
 
 async def list_master_categories(ctx: Context, top: int = 500) -> str:
@@ -193,8 +242,14 @@ async def list_master_categories(ctx: Context, top: int = 500) -> str:
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"list_master_categories: http_error status={e.response.status_code}")
         return json.dumps(
-            {"error": "http_error", "status_code": e.response.status_code, "message": e.response.text[:2000]}
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"list_master_categories: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps(
+            {"error": "network_error", "message": sanitize_client_error_message(str(e))},
+        )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from mcp.server.fastmcp import Context, FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -183,6 +185,11 @@ def main() -> None:
         msg = f"Unknown MCP_TRANSPORT: {s.mcp_transport}"
         raise SystemExit(msg)
     if transport == "stdio":
+        print(
+            "outlook-mcp: stdio transport active — waiting for MCP JSON-RPC on stdin/stdout "
+            "(spawn from Cursor, MCP Inspector, or another client; Ctrl+C exits).",
+            file=sys.stderr,
+        )
         mcp_app.run(transport="stdio")
     elif transport == "sse":
         mcp_app.run(transport="sse")

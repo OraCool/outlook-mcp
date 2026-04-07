@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -77,6 +77,47 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("GRAPH_OAUTH_TOKEN_CACHE_PATH", "graph_oauth_token_cache_path"),
     )
+
+    pii_redaction_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PII_REDACTION_ENABLED", "pii_redaction_enabled"),
+        description="When true, redact PII in email JSON before MCP sampling (requires [pii] extra + spaCy model).",
+    )
+    pii_redaction_strategy: str = Field(
+        default="pseudonymize",
+        validation_alias=AliasChoices("PII_REDACTION_STRATEGY", "pii_redaction_strategy"),
+        description="PII replacement strategy: pseudonymize | hash | remove.",
+    )
+    pii_entities: str = Field(
+        default="EMAIL_ADDRESS,PERSON,PHONE_NUMBER,IBAN_CODE,CREDIT_CARD,IP_ADDRESS,LOCATION",
+        validation_alias=AliasChoices("PII_ENTITIES", "pii_entities"),
+        description="Comma-separated Presidio entity types to detect/redact.",
+    )
+    pii_response_level: str = Field(
+        default="full",
+        validation_alias=AliasChoices("PII_RESPONSE_LEVEL", "pii_response_level"),
+        description=(
+            "Tool response email payload: full | minimal | redacted. "
+            "`minimal` omits body_content only (from/body_preview still plaintext). "
+            "`redacted` applies Presidio when available; otherwise deterministic email + display-name masking."
+        ),
+    )
+
+    @field_validator("pii_redaction_strategy")
+    @classmethod
+    def _normalize_pii_strategy(cls, v: str) -> str:
+        s = (v or "pseudonymize").lower().strip()
+        if s not in ("pseudonymize", "hash", "remove"):
+            return "pseudonymize"
+        return s
+
+    @field_validator("pii_response_level")
+    @classmethod
+    def _normalize_pii_response_level(cls, v: str) -> str:
+        s = (v or "full").lower().strip()
+        if s not in ("full", "minimal", "redacted"):
+            return "full"
+        return s
 
 
 @lru_cache

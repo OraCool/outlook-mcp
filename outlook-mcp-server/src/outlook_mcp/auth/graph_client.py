@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+
+def _encode_message_id_for_path(message_id: str) -> str:
+    """Percent-encode a Graph ``message`` id for use in a URL path (``+``, ``/``, ``=``, etc.)."""
+    return quote(message_id.strip(), safe="")
 
 
 class GraphMailClient:
@@ -26,28 +32,35 @@ class GraphMailClient:
         params: dict[str, str] = {}
         if select:
             params["$select"] = select
+        enc = _encode_message_id_for_path(message_id)
         async with self._client() as c:
-            r = await c.get(f"/me/messages/{message_id}", params=params or None)
+            r = await c.get(f"/me/messages/{enc}", params=params or None)
             r.raise_for_status()
             return r.json()
 
     async def list_messages_by_conversation(
         self, conversation_id: str, top: int = 50, *, select: str | None = None
     ) -> dict[str, Any]:
-        # OData single quotes in filter must be doubled
-        safe = conversation_id.replace("'", "''")
+        # OData single quotes in filter must be doubled.
+        # Do not add $orderby: Graph often returns 400 InefficientFilter for
+        # $filter=conversationId combined with $orderby on /me/messages.
+        cid = conversation_id.strip()
+        safe = cid.replace("'", "''")
         filt = f"conversationId eq '{safe}'"
         params: dict[str, str] = {
             "$filter": filt,
             "$top": str(top),
-            "$orderby": "receivedDateTime asc",
         }
         if select:
             params["$select"] = select
         async with self._client() as c:
             r = await c.get("/me/messages", params=params)
             r.raise_for_status()
-            return r.json()
+            body = r.json()
+        values = list(body.get("value") or [])
+        values.sort(key=lambda m: (m.get("receivedDateTime") or ""))
+        body["value"] = values
+        return body
 
     async def search_messages(
         self, query: str, top: int = 25, *, select: str | None = None
@@ -81,8 +94,9 @@ class GraphMailClient:
             return r.json()
 
     async def list_attachments(self, message_id: str) -> dict[str, Any]:
+        enc = _encode_message_id_for_path(message_id)
         async with self._client() as c:
-            r = await c.get(f"/me/messages/{message_id}/attachments")
+            r = await c.get(f"/me/messages/{enc}/attachments")
             r.raise_for_status()
             return r.json()
 
@@ -108,8 +122,9 @@ class GraphMailClient:
             return r.json()
 
     async def update_message(self, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        enc = _encode_message_id_for_path(message_id)
         async with self._client() as c:
-            r = await c.patch(f"/me/messages/{message_id}", json=payload)
+            r = await c.patch(f"/me/messages/{enc}", json=payload)
             r.raise_for_status()
             if r.content:
                 return r.json()

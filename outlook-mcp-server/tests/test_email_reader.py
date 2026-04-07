@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from urllib.parse import quote
+
 from outlook_mcp.auth.graph_client import GraphMailClient
 from outlook_mcp.auth.token_handler import GraphTokenMissingError
 from outlook_mcp.tools._common import graph_message_to_model
@@ -96,6 +98,29 @@ async def test_graph_mail_client_update_message_no_content(mock_async_client_cla
     mock_instance.patch.assert_awaited_once_with("/me/messages/mid", json={"categories": ["X"]})
 
 
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_encodes_message_id_in_path(mock_async_client_class: MagicMock) -> None:
+    """Graph ids may contain ``+``, ``/``, ``=``; they must be percent-encoded in the URL path."""
+    raw_id = "A+/=tail"
+    enc = quote(raw_id.strip(), safe="")
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.content = b""
+    mock_instance = AsyncMock()
+    mock_instance.patch = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    await gc.update_message(raw_id, {"categories": ["PAYMENT_REMINDER_SENT"]})
+    mock_instance.patch.assert_awaited_once_with(
+        f"/me/messages/{enc}",
+        json={"categories": ["PAYMENT_REMINDER_SENT"]},
+    )
+
+
 def test_list_select_omits_full_body_field() -> None:
     parts = {p.strip() for p in _LIST_SELECT.split(",")}
     assert "body" not in parts
@@ -171,10 +196,34 @@ async def test_graph_mail_client_list_by_conversation_passes_select(mock_async_c
         params={
             "$filter": "conversationId eq 'conv-1'",
             "$top": "20",
-            "$orderby": "receivedDateTime asc",
             "$select": _LIST_SELECT,
         },
     )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_by_conversation_sorts_by_received(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(
+        return_value={
+            "value": [
+                {"id": "b", "receivedDateTime": "2026-03-18T10:00:00Z"},
+                {"id": "a", "receivedDateTime": "2026-03-17T12:00:00Z"},
+            ],
+        },
+    )
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    out = await gc.list_messages_by_conversation("conv-1", top=10)
+    ids = [m["id"] for m in out["value"]]
+    assert ids == ["a", "b"]
 
 
 @pytest.mark.asyncio

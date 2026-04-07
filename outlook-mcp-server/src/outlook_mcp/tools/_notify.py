@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Awaitable
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
 
+from outlook_mcp.tools._common import sanitize_client_error_message
+
 logger = logging.getLogger(__name__)
 
 # Bound notify work so tools never block on slow/disabled inspector transports.
@@ -34,18 +36,21 @@ async def _safe_notify(awaitable: Awaitable[Any]) -> None:
 async def tool_log_info(ctx: Context | None, message: str, *, logger_name: str = "outlook_mcp") -> None:
     if ctx is None:
         return
+    message = sanitize_client_error_message(message, max_len=800)
     await _safe_notify(ctx.log("info", message, logger_name=logger_name))
 
 
 async def tool_log_warning(ctx: Context | None, message: str, *, logger_name: str = "outlook_mcp") -> None:
     if ctx is None:
         return
+    message = sanitize_client_error_message(message, max_len=800)
     await _safe_notify(ctx.log("warning", message, logger_name=logger_name))
 
 
 async def tool_log_error(ctx: Context | None, message: str, *, logger_name: str = "outlook_mcp") -> None:
     if ctx is None:
         return
+    message = sanitize_client_error_message(message, max_len=800)
     await _safe_notify(ctx.log("error", message, logger_name=logger_name))
 
 
@@ -57,6 +62,8 @@ async def tool_report_progress(
 ) -> None:
     if ctx is None:
         return
+    if message is not None:
+        message = sanitize_client_error_message(message, max_len=800)
     await _safe_notify(ctx.report_progress(progress, total=total, message=message))
 
 
