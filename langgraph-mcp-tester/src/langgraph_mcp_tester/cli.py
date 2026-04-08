@@ -137,17 +137,13 @@ async def amain(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # --list-scenarios: no MCP connection needed
+    # --list-scenarios: no MCP connection or settings needed
     if args.list_scenarios:
         return _handle_list_scenarios()
 
-    settings = get_settings()
-
-    # --list-tools: connect to MCP, print, exit
-    if args.list_tools:
-        return await _handle_list_tools(settings)
-
-    # Determine user text
+    # Resolve user text from args before loading settings (so validation
+    # errors like unknown scenario or missing args exit early without
+    # requiring LLM_PROVIDER to be set).
     user_text: str | None = None
 
     if args.scenario:
@@ -165,9 +161,15 @@ async def amain(argv: list[str] | None = None) -> int:
         user_text = None  # handled below
     elif args.query:
         user_text = " ".join(args.query)
-    else:
+    elif not args.list_tools:
         parser.print_usage(sys.stderr)
         return 2
+
+    settings = get_settings()
+
+    # --list-tools: connect to MCP, print, exit
+    if args.list_tools:
+        return await _handle_list_tools(settings)
 
     graph, tools = await _setup_agent(settings)
     print(f"{len(tools)} tools loaded from MCP server.", file=sys.stderr)
