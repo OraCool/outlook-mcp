@@ -21,6 +21,8 @@ def test_classification_prompt_lists_categories() -> None:
     assert "PAYMENT_PROMISE" in CLASSIFICATION_SYSTEM
     assert "UNCLASSIFIED" in CLASSIFICATION_SYSTEM
     assert "confidence" in CLASSIFICATION_SYSTEM
+    assert "thread_id" in CLASSIFICATION_SYSTEM
+    assert "sender_company" in CLASSIFICATION_SYSTEM
     assert "untrusted" in CLASSIFICATION_SYSTEM.lower()
     assert CLASSIFICATION_SYSTEM == build_classification_system_prompt(DEFAULT_CLASSIFICATION_CATEGORIES)
 

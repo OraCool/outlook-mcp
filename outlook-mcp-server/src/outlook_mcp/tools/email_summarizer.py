@@ -24,14 +24,14 @@ from outlook_mcp.tools._email_prompt import (
     build_untrusted_email_user_text,
     sanitize_email_json_for_prompt,
 )
-
-# Aggregate character budget for thread prompts to avoid exceeding LLM context limits.
-# Individual messages can be up to ~32K chars; 50 messages would be ~1.6MB uncapped.
-_MAX_THREAD_PROMPT_CHARS = 128_000
 from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
+
+# Aggregate character budget for thread prompts to avoid exceeding LLM context limits.
+# Individual messages can be up to ~32K chars; 50 messages would be ~1.6MB uncapped.
+_MAX_THREAD_PROMPT_CHARS = 128_000
 
 _SUMMARIZE_FETCH_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,from,sender,toRecipients,"
@@ -188,11 +188,12 @@ async def summarize_thread(conversation_id: str, ctx: Context, *, top: int = 50)
         return json.dumps({"error": "fetch_failed", "message": sanitize_client_error_message(str(e))})
 
     # Build combined thread text for prompt, enforcing aggregate size budget.
-    # Messages are newest-first from Graph; keep newest (most relevant) within budget.
+    # Graph returns oldest-first (see list_messages_by_conversation); iterate newest-first
+    # so the budget retains the most recent messages.
     thread_parts: list[str] = []
     budget_remaining = _MAX_THREAD_PROMPT_CHARS
     truncated_count = 0
-    for msg in messages:
+    for msg in reversed(messages):
         email = graph_message_to_model(msg)
         email_json = email.model_dump(mode="json", by_alias=True)
         safe = sanitize_email_json_for_prompt(email_json)

@@ -41,6 +41,8 @@ class GraphMailClient:
     async def list_messages_by_conversation(
         self, conversation_id: str, top: int = 50, *, select: str | None = None
     ) -> dict[str, Any]:
+        """Return messages for a thread, sorted by ``receivedDateTime`` ascending (oldest first)."""
+
         # OData single quotes in filter must be doubled.
         # Do not add $orderby: Graph often returns 400 InefficientFilter for
         # $filter=conversationId combined with $orderby on /me/messages.
@@ -144,11 +146,11 @@ class GraphMailClient:
         Returns the created draft message.
         """
         enc = _encode_message_id_for_path(message_id)
-        payload: dict[str, Any] = {}
-        if comment:
-            payload["comment"] = comment
         async with self._client() as c:
-            r = await c.post(f"/me/messages/{enc}/createReply", json=payload or None)
+            if comment:
+                r = await c.post(f"/me/messages/{enc}/createReply", json={"comment": comment})
+            else:
+                r = await c.post(f"/me/messages/{enc}/createReply")
             r.raise_for_status()
             return r.json()
 

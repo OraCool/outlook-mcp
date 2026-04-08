@@ -290,6 +290,7 @@ async def list_folders(ctx: Context, top: int = 100) -> str:
             }
         )
     except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"list_folders: network_error {type(e).__name__}")
         return json.dumps(
             {"error": "network_error", "message": sanitize_client_error_message(str(e))},
         )

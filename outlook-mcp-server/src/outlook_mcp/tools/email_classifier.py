@@ -69,6 +69,8 @@ _CLASSIFICATION_JSON_SCHEMA = """{
   "suggested_actions": [
     {"action": "string", "description": "string", "priority": "primary|secondary"}
   ],
+  "thread_id": "Graph conversationId from the email JSON or null",
+  "sender_company": "inferred company or counterparty name or null (use [CUSTOMER] if unsure)",
   "escalation": { "required": false, "reason": "string or null" }
 }"""
 
@@ -89,6 +91,8 @@ Rules:
 - Write a 1-2 sentence "summary" capturing intent and key financial context.
 - Detect email language and set "language" (ISO 639-1).
 - Suggest 2-4 contextual next actions in "suggested_actions" (first should be primary).
+- Set "thread_id" to the email's conversationId from the provided message JSON when present.
+- Set "sender_company" when you can infer counterparty/company from signature or domain (placeholders for PII).
 - Respond with a single JSON object only (no markdown), matching this schema:
 {_CLASSIFICATION_JSON_SCHEMA}
 

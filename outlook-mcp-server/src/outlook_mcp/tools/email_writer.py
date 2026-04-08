@@ -73,7 +73,7 @@ async def set_message_categories(ctx: Context, message_id: str, categories: list
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"set_message_categories: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
 async def send_email(
@@ -126,7 +126,7 @@ async def send_email(
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"send_email: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
 async def create_draft(
@@ -177,7 +177,7 @@ async def create_draft(
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"create_draft: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
 async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> str:
@@ -208,7 +208,7 @@ async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> s
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"mark_as_read: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
 async def move_email(ctx: Context, message_id: str, destination_folder_id: str) -> str:
@@ -242,7 +242,7 @@ async def move_email(ctx: Context, message_id: str, destination_folder_id: str) 
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"move_email: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
 async def create_reply_draft(ctx: Context, message_id: str, comment: str | None = None) -> str:
@@ -277,4 +277,4 @@ async def create_reply_draft(ctx: Context, message_id: str, comment: str | None 
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"create_reply_draft: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
