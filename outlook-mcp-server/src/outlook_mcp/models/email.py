@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-CLASSIFICATION_CATEGORIES: frozenset[str] = frozenset(
+DEFAULT_CLASSIFICATION_CATEGORIES: frozenset[str] = frozenset(
     {
         "PAYMENT_REMINDER_SENT",
         "INVOICE_NOT_RECEIVED",
@@ -25,6 +25,13 @@ CLASSIFICATION_CATEGORIES: frozenset[str] = frozenset(
         "BILLING_UPDATE",
     }
 )
+
+
+def get_classification_categories() -> frozenset[str]:
+    """Active taxonomy from :func:`~outlook_mcp.config.get_settings` (env ``CLASSIFICATION_CATEGORIES``)."""
+    from outlook_mcp.config import get_settings
+
+    return get_settings().classification_category_set()
 
 
 class EmailAddress(BaseModel):
@@ -97,7 +104,7 @@ class ClassificationResult(BaseModel):
 
     @model_validator(mode="after")
     def normalize_unknown_category(self) -> ClassificationResult:
-        if self.category not in CLASSIFICATION_CATEGORIES:
+        if self.category not in get_classification_categories():
             self.category = "UNCLASSIFIED"
             self.confidence = min(float(self.confidence), 0.74)
         return self

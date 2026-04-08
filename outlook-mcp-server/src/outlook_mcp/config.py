@@ -103,6 +103,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    classification_categories: str = Field(
+        default=(
+            "PAYMENT_REMINDER_SENT,INVOICE_NOT_RECEIVED,INVOICE_DISPUTE,PAYMENT_PROMISE,"
+            "PAYMENT_CONFIRMATION,EXTENSION_REQUEST,PARTIAL_PAYMENT_NOTE,ESCALATION_LEGAL,"
+            "INTERNAL_NOTE,UNCLASSIFIED,REMITTANCE_ADVICE,BALANCE_INQUIRY,"
+            "CREDIT_NOTE_REQUEST,AUTO_REPLY,BILLING_UPDATE"
+        ),
+        validation_alias=AliasChoices("CLASSIFICATION_CATEGORIES", "classification_categories"),
+        description=(
+            "Comma-separated classification taxonomy labels for categorize_email / apply_llm_category_to_email. "
+            "UNCLASSIFIED is always included."
+        ),
+    )
+
     @field_validator("pii_redaction_strategy")
     @classmethod
     def _normalize_pii_strategy(cls, v: str) -> str:
@@ -118,6 +132,12 @@ class Settings(BaseSettings):
         if s not in ("full", "minimal", "redacted"):
             return "full"
         return s
+
+    def classification_category_set(self) -> frozenset[str]:
+        """Parse ``classification_categories`` and ensure UNCLASSIFIED is always allowed."""
+        cats = {c.strip() for c in self.classification_categories.split(",") if c.strip()}
+        cats.add("UNCLASSIFIED")
+        return frozenset(cats)
 
 
 @lru_cache
