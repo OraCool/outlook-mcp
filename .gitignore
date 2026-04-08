@@ -6,6 +6,7 @@ ar-mail-management
 .env.local
 .env.*.local
 *.pem
+.claude
 
 # Python (repo root and stray artifacts)
 __pycache__/
@@ -27,3 +28,4 @@ langgraph-mcp-tester/.venv/
 .vscode/
 *.swp
 *.swo
+.mcp.json

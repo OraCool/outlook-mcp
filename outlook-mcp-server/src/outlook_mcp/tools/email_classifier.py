@@ -46,7 +46,12 @@ ClassifyViaSamplingResult = (
 _CLASSIFICATION_JSON_SCHEMA = """{
   "email_id": "string",
   "category": "<one of the allowed categories>",
+  "sub_category": "string or null (optional refinement within primary category)",
+  "categories": ["<primary category>", "<optional secondary category>"],
   "confidence": 0.0,
+  "priority": "HIGH|MEDIUM|LOW",
+  "summary": "1-2 sentence summary of email intent and key financial context (use PII placeholders)",
+  "language": "ISO 639-1 code (e.g. en, de, fr)",
   "intent": {
     "customer_statement": "string (use [CUSTOMER], [AMOUNT], [DATE] placeholders instead of raw PII in this field)",
     "required_action": "string",
@@ -55,10 +60,15 @@ _CLASSIFICATION_JSON_SCHEMA = """{
   "reasoning": "string (use placeholders for PII)",
   "extracted_data": {
     "promised_date": "ISO8601 date or null",
+    "due_date": "ISO8601 invoice due date or null",
     "disputed_amount": number or null,
+    "currency": "ISO4217 code or null (e.g. EUR, USD)",
     "invoice_numbers": ["string"],
     "payment_reference": "string or null"
   },
+  "suggested_actions": [
+    {"action": "string", "description": "string", "priority": "primary|secondary"}
+  ],
   "escalation": { "required": false, "reason": "string or null" }
 }"""
 
@@ -66,13 +76,19 @@ _CLASSIFICATION_JSON_SCHEMA = """{
 def build_classification_system_prompt(categories: frozenset[str]) -> str:
     """Build the MCP sampling system prompt for the given taxonomy (sorted for stable output)."""
     cat_list = ", ".join(sorted(categories))
-    return f"""You are an AR Email Classification Specialist. Classify the email into exactly one category.
+    return f"""You are an AR Email Classification Specialist. Classify the email into a primary category and provide structured analysis.
 
 Allowed categories (use the exact string):
 {cat_list}
 
 Rules:
-- If confidence in the best category is below 0.75, use UNCLASSIFIED.
+- Use exactly one primary category. If confidence is below 0.75, use UNCLASSIFIED.
+- For multi-intent emails, set the primary category and list all applicable labels in "categories" (max 3).
+- Set "sub_category" when the primary category has refinements (e.g. dispute subtypes: PRICING, SHORT_PAYMENT, RETURNS_DAMAGES, GENERAL).
+- Set "priority": HIGH for disputes/legal/overdue>60d, MEDIUM for promises/extensions, LOW for confirmations/inquiries/auto-replies.
+- Write a 1-2 sentence "summary" capturing intent and key financial context.
+- Detect email language and set "language" (ISO 639-1).
+- Suggest 2-4 contextual next actions in "suggested_actions" (first should be primary).
 - Respond with a single JSON object only (no markdown), matching this schema:
 {_CLASSIFICATION_JSON_SCHEMA}
 
@@ -123,7 +139,7 @@ async def _classify_message_via_sampling(
                     content=TextContent(type="text", text=user_text),
                 )
             ],
-            max_tokens=2000,
+            max_tokens=3000,
             temperature=0,
         )
         text = sampling_response_text(result)
