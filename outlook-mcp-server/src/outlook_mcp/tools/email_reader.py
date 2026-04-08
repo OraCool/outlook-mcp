@@ -281,8 +281,13 @@ async def list_folders(ctx: Context, top: int = 100) -> str:
         ]
         return json.dumps({"folders": folders, "count": len(folders)}, indent=2)
     except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"list_folders: http_error status={e.response.status_code}")
         return json.dumps(
-            {"error": "http_error", "status_code": e.response.status_code, "message": e.response.text[:2000]}
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
         )
     except httpx.HTTPError as e:
         return json.dumps(
