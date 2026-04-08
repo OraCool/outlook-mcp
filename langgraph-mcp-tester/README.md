@@ -50,6 +50,60 @@ Usually **no**. `langgraph-mcp-tester` only forwards the token string to the MCP
 
 **Alternative without `X_GRAPH_TOKEN` on the tester** — Run [outlook-mcp-server](../outlook-mcp-server/) with `GRAPH_DEV_TOKEN` set to the same delegated JWT (server-side only, local dev). The server does not use stored Azure app secrets; multi-tenant operation relies on each caller’s token.
 
+## Available MCP Tools (19)
+
+The agent dynamically discovers tools from the MCP server. The current server exposes:
+
+| Group | Tools | Notes |
+|-------|-------|-------|
+| **Read** | `list_inbox`, `get_email`, `get_thread`, `search_emails`, `get_attachments`, `list_master_categories`, `list_folders` | Always available |
+| **Classification** | `categorize_email`, `apply_llm_category_to_email` | `categorize_email` returns enriched JSON (priority, summary, sub_category, suggested_actions). `apply_llm_category_to_email` requires write ops. |
+| **Extraction** | `extract_email_data` | Invoice numbers, amounts, dates, payment references |
+| **Summarization** | `summarize_email`, `summarize_thread` | 1-2 sentence (email) or progressive thread summary |
+| **Drafting** | `draft_reply` | AI-generated reply text; does NOT create an Outlook draft |
+| **Write** | `send_email`, `create_draft`, `create_reply_draft`, `mark_as_read`, `move_email`, `set_message_categories` | Require `ENABLE_WRITE_OPERATIONS=true` on the server |
+
+## CLI Reference
+
+```bash
+# Single-shot query (existing default)
+uv run langgraph-mcp-tester "List the 5 most recent messages in my inbox"
+
+# Run a predefined scenario
+uv run langgraph-mcp-tester --scenario triage
+
+# List available scenarios
+uv run langgraph-mcp-tester --list-scenarios
+
+# List tools discovered from MCP server
+uv run langgraph-mcp-tester --list-tools
+
+# Interactive multi-turn conversation
+uv run langgraph-mcp-tester --interactive
+```
+
+Use `--` before the query if it starts with `-`: `uv run langgraph-mcp-tester -- --help-with-invoices`.
+
+## Predefined Scenarios
+
+Run `--list-scenarios` for the full list. Key scenarios:
+
+| Scenario | Tools Exercised | Purpose |
+|----------|----------------|---------|
+| `triage` | list_inbox, categorize_email, summarize_email | Basic inbox triage |
+| `thread-summary` | get_thread, summarize_thread | Thread analysis |
+| `full-processing` | categorize_email, extract_email_data, draft_reply, create_reply_draft | End-to-end AR processing |
+| `organize` | list_folders, mark_as_read, move_email | Folder management |
+| `classify-and-tag` | categorize_email, apply_llm_category_to_email | Classification + Outlook tagging |
+| `complete-ar` | list_inbox, categorize_email, extract_email_data, draft_reply, create_reply_draft | Full AR workflow |
+| `ai-draft-reply` | get_email, draft_reply | AI reply generation |
+
+All 19 tools are covered across the full scenario set.
+
+## Write Operations
+
+Write tools (`send_email`, `create_draft`, `mark_as_read`, `move_email`, `create_reply_draft`, `set_message_categories`, `apply_llm_category_to_email`) require `ENABLE_WRITE_OPERATIONS=true` set in the **server's** `.env`, not this tester's. If disabled, these tools return `write_disabled` errors.
+
 ## Tests
 
 ```bash
