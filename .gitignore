@@ -30,3 +30,4 @@ langgraph-mcp-tester/.venv/
 *.swo
 .mcp.json
 .playwright*
+ar-mail-management
