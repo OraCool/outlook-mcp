@@ -1,0 +1,243 @@
+%% AR Email Management - Approval Routing State Machine
+%% Models the approval workflow states and timeout escalation behavior
+%% for all 4 approval tiers: STANDARD, PRIORITY, SUPERVISOR, LEGAL.
+%%
+%% Key invariant: Timeouts ESCALATE, never auto-approve.
+%% Every action has requires_approval = true (GDPR Art. 22, EU AI Act Art. 14).
+%%
+%% Source: prompts/ActionRouter.md (Approval Route Rules),
+%%         decisions/ADR-002-human-in-the-loop-design.md
+
+stateDiagram-v2
+
+    %% ════════════════════════════════════════════════
+    %% Initial state — action plan enters approval queue
+    %% ════════════════════════════════════════════════
+
+    [*] --> ROUTE_SELECTION : Action plan generated<br/>by ActionRouter
+
+    %% ════════════════════════════════════════════════
+    %% Approval Tier Selection
+    %% ════════════════════════════════════════════════
+
+    state ROUTE_SELECTION <<choice>>
+    ROUTE_SELECTION --> STANDARD : Routine actions<br/>(confirmations, inquiries,<br/>resends, billing, auto-reply)
+    ROUTE_SELECTION --> PRIORITY : Dispute-related<br/>(LOG_DISPUTE, dispute ack)
+    ROUTE_SELECTION --> SUPERVISOR : Business judgment<br/>(extensions, credit notes,<br/>unclassified, high-value)
+    ROUTE_SELECTION --> LEGAL : Legal/threats<br/>(ESCALATION_LEGAL)
+
+    %% ════════════════════════════════════════════════
+    %% STANDARD Tier (4h SLA)
+    %% ════════════════════════════════════════════════
+
+    state STANDARD {
+        [*] --> STD_QUEUED
+        STD_QUEUED : QUEUED<br/>(4h SLA timer starts)
+
+        STD_QUEUED --> STD_IN_REVIEW : AR Specialist<br/>opens item
+        STD_IN_REVIEW : IN_REVIEW<br/>(CodeMie Workflow PAUSED)
+
+        STD_IN_REVIEW --> STD_APPROVED : Approve
+        STD_IN_REVIEW --> STD_EDITED : Edit & Approve
+        STD_IN_REVIEW --> STD_REJECTED : Reject<br/>(with reason)
+        STD_IN_REVIEW --> STD_ESCALATED : Escalate<br/>manually
+
+        STD_QUEUED --> STD_TIMEOUT : 4h elapsed<br/>without review
+        STD_TIMEOUT : TIMED_OUT
+
+        STD_APPROVED : APPROVED
+        STD_EDITED : EDITED_AND_APPROVED
+        STD_REJECTED : REJECTED
+        STD_ESCALATED : ESCALATED
+
+        STD_TIMEOUT --> STD_ESCALATED : Auto-escalate<br/>to supervisor
+    }
+
+    %% ════════════════════════════════════════════════
+    %% PRIORITY Tier (1h SLA)
+    %% ════════════════════════════════════════════════
+
+    state PRIORITY {
+        [*] --> PRI_QUEUED
+        PRI_QUEUED : QUEUED<br/>(1h SLA timer starts)
+
+        PRI_QUEUED --> PRI_IN_REVIEW : AR Specialist<br/>opens item
+        PRI_IN_REVIEW : IN_REVIEW<br/>(CodeMie Workflow PAUSED)
+
+        PRI_IN_REVIEW --> PRI_APPROVED : Approve
+        PRI_IN_REVIEW --> PRI_EDITED : Edit & Approve
+        PRI_IN_REVIEW --> PRI_REJECTED : Reject<br/>(with reason)
+        PRI_IN_REVIEW --> PRI_ESCALATED : Escalate<br/>manually
+
+        PRI_QUEUED --> PRI_TIMEOUT : 1h elapsed<br/>without review
+        PRI_TIMEOUT : TIMED_OUT
+
+        PRI_APPROVED : APPROVED
+        PRI_EDITED : EDITED_AND_APPROVED
+        PRI_REJECTED : REJECTED
+        PRI_ESCALATED : ESCALATED
+
+        PRI_TIMEOUT --> PRI_ESCALATED : Auto-escalate<br/>to supervisor
+    }
+
+    %% ════════════════════════════════════════════════
+    %% SUPERVISOR Tier (30min SLA)
+    %% ════════════════════════════════════════════════
+
+    state SUPERVISOR {
+        [*] --> SUP_QUEUED
+        SUP_QUEUED : QUEUED<br/>(30min SLA timer starts)
+
+        SUP_QUEUED --> SUP_IN_REVIEW : Supervisor<br/>opens item
+        SUP_IN_REVIEW : IN_REVIEW<br/>(CodeMie Workflow PAUSED)
+
+        SUP_IN_REVIEW --> SUP_APPROVED : Approve
+        SUP_IN_REVIEW --> SUP_EDITED : Edit & Approve
+        SUP_IN_REVIEW --> SUP_REJECTED : Reject<br/>(with reason)
+        SUP_IN_REVIEW --> SUP_RECLASSIFY : Override<br/>category
+        SUP_IN_REVIEW --> SUP_ESCALATED : Escalate<br/>manually
+
+        SUP_QUEUED --> SUP_TIMEOUT : 30min elapsed<br/>without review
+        SUP_TIMEOUT : TIMED_OUT
+
+        SUP_APPROVED : APPROVED
+        SUP_EDITED : EDITED_AND_APPROVED
+        SUP_REJECTED : REJECTED
+        SUP_RECLASSIFY : RECLASSIFIED
+        SUP_ESCALATED : ESCALATED
+
+        SUP_TIMEOUT --> SUP_ESCALATED : Auto-escalate<br/>to senior mgmt
+    }
+
+    %% ════════════════════════════════════════════════
+    %% LEGAL Tier (15min SLA)
+    %% ════════════════════════════════════════════════
+
+    state LEGAL {
+        [*] --> LEG_QUEUED
+        LEG_QUEUED : QUEUED<br/>(15min SLA timer starts)
+
+        LEG_QUEUED --> LEG_IN_REVIEW : Legal team<br/>opens item
+        LEG_IN_REVIEW : IN_REVIEW<br/>(CodeMie Workflow PAUSED)
+
+        LEG_IN_REVIEW --> LEG_APPROVED : Approve<br/>(legal response crafted)
+        LEG_IN_REVIEW --> LEG_REJECTED : Reject /<br/>no action needed
+        LEG_IN_REVIEW --> LEG_ESCALATED : Escalate to<br/>external counsel
+
+        LEG_QUEUED --> LEG_TIMEOUT : 15min elapsed<br/>without review
+        LEG_TIMEOUT : TIMED_OUT
+
+        LEG_APPROVED : APPROVED
+        LEG_REJECTED : REJECTED
+        LEG_ESCALATED : ESCALATED
+
+        LEG_TIMEOUT --> LEG_ESCALATED : Auto-escalate to<br/>senior mgmt +<br/>legal director
+    }
+
+    %% ════════════════════════════════════════════════
+    %% Post-Approval Execution
+    %% ════════════════════════════════════════════════
+
+    state EXECUTION {
+        [*] --> EXEC_ACTIONS
+        EXEC_ACTIONS : Execute approved actions<br/>in order
+
+        EXEC_ACTIONS --> EXEC_SEND : SEND_EMAIL<br/>→ Graph API
+        EXEC_ACTIONS --> EXEC_SAP : UPDATE_SAP / LOG_DISPUTE /<br/>TRIGGER_RECONCILIATION<br/>→ SAP FS2/S4
+        EXEC_ACTIONS --> EXEC_LOG : LOG_EVENT<br/>→ SAP + Audit
+
+        EXEC_SEND --> EXEC_COMPLETE
+        EXEC_SAP --> EXEC_COMPLETE
+        EXEC_LOG --> EXEC_COMPLETE
+
+        EXEC_COMPLETE : COMPLETED<br/>(all actions executed)
+    }
+
+    %% ════════════════════════════════════════════════
+    %% Transitions from approval tiers to execution
+    %% ════════════════════════════════════════════════
+
+    STD_APPROVED --> EXECUTION
+    STD_EDITED --> EXECUTION
+    PRI_APPROVED --> EXECUTION
+    PRI_EDITED --> EXECUTION
+    SUP_APPROVED --> EXECUTION
+    SUP_EDITED --> EXECUTION
+    LEG_APPROVED --> EXECUTION
+
+    %% ════════════════════════════════════════════════
+    %% Rejection → manual handling
+    %% ════════════════════════════════════════════════
+
+    state MANUAL_HANDLING {
+        [*] --> MANUAL
+        MANUAL : Human handles manually<br/>outside AI pipeline
+    }
+
+    STD_REJECTED --> MANUAL_HANDLING
+    PRI_REJECTED --> MANUAL_HANDLING
+    SUP_REJECTED --> MANUAL_HANDLING
+    LEG_REJECTED --> MANUAL_HANDLING
+
+    %% ════════════════════════════════════════════════
+    %% Reclassify → restart pipeline
+    %% ════════════════════════════════════════════════
+
+    state RECLASSIFY_RESTART {
+        [*] --> RESTART
+        RESTART : Restart pipeline from<br/>ResponseDrafter with<br/>new human-assigned category
+    }
+
+    SUP_RECLASSIFY --> RECLASSIFY_RESTART
+
+    %% ════════════════════════════════════════════════
+    %% Terminal states
+    %% ════════════════════════════════════════════════
+
+    EXEC_COMPLETE --> [*] : Case closed
+    MANUAL --> [*] : Manual resolution
+    RESTART --> [*] : Re-enters pipeline
+
+    %% ════════════════════════════════════════════════
+    %% Notes
+    %% ════════════════════════════════════════════════
+
+    note right of STANDARD
+        Categories routed here:
+        PAYMENT_REMINDER_SENT
+        INVOICE_NOT_RECEIVED
+        PAYMENT_PROMISE
+        PAYMENT_CONFIRMATION
+        PARTIAL_PAYMENT_NOTE
+        REMITTANCE_ADVICE
+        BALANCE_INQUIRY
+        BILLING_UPDATE
+        AUTO_REPLY
+        INTERNAL_NOTE
+    end note
+
+    note right of PRIORITY
+        Categories routed here:
+        INVOICE_DISPUTE
+    end note
+
+    note right of SUPERVISOR
+        Categories routed here:
+        EXTENSION_REQUEST
+        CREDIT_NOTE_REQUEST
+        UNCLASSIFIED
+        (+ any with amount > EUR 100K)
+    end note
+
+    note right of LEGAL
+        Categories routed here:
+        ESCALATION_LEGAL
+    end note
+
+    note left of EXECUTION
+        Invariant: Timeouts ESCALATE,
+        never auto-approve.
+        Every action requires human
+        approval before execution.
+        (GDPR Art. 22, EU AI Act Art. 14)
+    end note

@@ -1,0 +1,164 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4A90D9', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#2C6FAC', 'lineColor': '#1a1a1a', 'secondaryColor': '#f0f4f8', 'tertiaryColor': '#e8f4f8', 'signalColor': '#1a1a1a', 'signalTextColor': '#1a1a1a', 'activationBkgColor': '#d4e9f7'}}}%%
+%% AR Email Management - Invoice Lifecycle Flows
+%% End-to-end sequences for all invoice-related scenarios:
+%%   S2  / INVOICE_NOT_RECEIVED (NOT_RECEIVED)  — customer claims non-receipt
+%%   S9  / INVOICE_NOT_RECEIVED (COPY_REQUEST)   — customer requests invoice copy
+%%   S4  / INVOICE_DISPUTE                       — customer disputes invoice
+%%   S14 / CREDIT_NOTE_REQUEST                   — customer requests credit note
+%%
+%% Key: S4 has strict action ordering (LOG_DISPUTE before SEND_EMAIL)
+%% Key: S4 has sub-category branching (PRICING/SHORT_PAYMENT/RETURNS_DAMAGES/GENERAL)
+%%
+%% Source: prompts/EmailClassifier.md, prompts/ResponseDrafter.md, prompts/ActionRouter.md
+
+ sequenceDiagram
+    autonumber
+
+    participant OL as Outlook<br/>(Graph API)
+    participant ING as Email Ingestion<br/>Service
+    participant TS as ThreadSummarizer
+    participant EC as EmailClassifier
+    participant RD as ResponseDrafter
+    participant AR as ActionRouter
+    participant RP as ReviewPresenter
+    participant UI as Approval UI<br/>(Alevate / SAP)
+    participant SAP as SAP FS2/S4
+    participant AUD as Audit Store
+
+    %% ════════════════════════════════════════════════
+    %% Common Ingestion
+    %% ════════════════════════════════════════════════
+    Note over OL,AUD: Common Ingestion Phase
+
+    OL->>ING: Webhook: new email notification
+    ING->>OL: Fetch email content + metadata
+    OL-->>ING: Email JSON
+    ING->>TS: Summarize thread (if > 3 emails)
+    TS-->>ING: Thread summary
+    ING->>EC: Classify email
+
+    %% ════════════════════════════════════════════════
+    %% S2 — Invoice Not Received (NOT_RECEIVED sub-category)
+    %% ════════════════════════════════════════════════
+    alt S2 — INVOICE_NOT_RECEIVED / NOT_RECEIVED (customer claims non-receipt)
+        Note over EC: Category: INVOICE_NOT_RECEIVED<br/>Sub-category: NOT_RECEIVED<br/>Confidence: ~0.91<br/>Priority: MEDIUM<br/>Extracted: invoice_numbers
+        EC-->>ING: Classification result
+
+        ING->>RD: Draft invoice resend response
+        Note over RD: Tone: FORMAL<br/>Confirm re-sending invoice<br/>Apologize for inconvenience
+        RD-->>ING: Draft text (FORMAL tone)
+
+        ING->>AR: Route actions
+        Note over AR: Actions:<br/>1. SEND_EMAIL(invoice_resend)<br/>2. LOG_EVENT(invoice_resent)<br/>Approval: STANDARD (4h)
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        RP-->>UI: Review package
+        ING->>AUD: Log: classification + draft
+
+        UI->>UI: AR Specialist reviews
+        alt Approved
+            UI->>SAP: Retrieve invoice document
+            SAP-->>UI: Invoice PDF/attachment
+            UI->>OL: Send email with invoice attached
+            UI->>SAP: LOG_EVENT: invoice_resent
+            UI->>AUD: Log: approved + resent
+        end
+
+    %% ════════════════════════════════════════════════
+    %% S9 — Invoice Copy Request (COPY_REQUEST sub-category)
+    %% ════════════════════════════════════════════════
+    else S9 — INVOICE_NOT_RECEIVED / COPY_REQUEST (customer requests duplicate)
+        Note over EC: Category: INVOICE_NOT_RECEIVED<br/>Sub-category: COPY_REQUEST<br/>Confidence: ~0.94<br/>Priority: LOW<br/>Customer is NOT claiming non-receipt<br/>Extracted: invoice_numbers
+        EC-->>ING: Classification result
+
+        ING->>RD: Draft copy acknowledgement
+        Note over RD: Tone: FORMAL<br/>Confirm sending requested copy<br/>Reference specific invoice(s)
+        RD-->>ING: Draft text (FORMAL tone)
+
+        ING->>AR: Route actions
+        Note over AR: Actions:<br/>1. SEND_EMAIL(invoice_resend)<br/>2. LOG_EVENT(invoice_resent)<br/>Approval: STANDARD (4h)<br/><br/>Note: Same actions as S2, but<br/>sub-category distinguishes intent
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        RP-->>UI: Review package
+        ING->>AUD: Log: classification + draft
+
+        UI->>UI: AR Specialist reviews
+        alt Approved
+            UI->>SAP: Retrieve invoice document
+            SAP-->>UI: Invoice PDF/attachment
+            UI->>OL: Send email with invoice attached
+            UI->>SAP: LOG_EVENT: invoice_resent
+            UI->>AUD: Log: approved + copy sent
+        end
+
+    %% ════════════════════════════════════════════════
+    %% S4 — Invoice Dispute (with sub-category branching)
+    %% ════════════════════════════════════════════════
+    else S4 — INVOICE_DISPUTE (customer disputes charges)
+        Note over EC: Category: INVOICE_DISPUTE<br/>Confidence: ~0.88<br/>Priority: HIGH<br/>Extracted: disputed_amount,<br/>invoice_numbers, currency
+
+        %% Sub-category determination
+        alt Sub-category: PRICING
+            Note over EC: Dispute type: PRICING<br/>Customer claims incorrect price
+        else Sub-category: SHORT_PAYMENT
+            Note over EC: Dispute type: SHORT_PAYMENT<br/>Customer paid less, claims reason
+        else Sub-category: RETURNS_DAMAGES
+            Note over EC: Dispute type: RETURNS_DAMAGES<br/>Customer claims goods returned/damaged
+        else Sub-category: GENERAL
+            Note over EC: Dispute type: GENERAL<br/>Unspecified dispute reason
+        end
+
+        EC-->>ING: Classification result (with sub_category)
+
+        ING->>RD: Draft dispute acknowledgement
+        Note over RD: Tone: EMPATHETIC<br/>Acknowledge concern without admitting fault<br/>Reference specific dispute details<br/>Request supporting documentation<br/>SLA: respond within 5 business days
+        RD-->>ING: Draft text (EMPATHETIC tone)
+
+        ING->>AR: Route actions
+        Note over AR: CRITICAL: LOG_DISPUTE must execute<br/>BEFORE SEND_EMAIL — dispute must be<br/>recorded in SAP before any customer<br/>communication acknowledges it<br/><br/>Actions (strict order):<br/>1. LOG_DISPUTE (SAP first)<br/>2. SEND_EMAIL(dispute_acknowledgement)<br/>Approval: PRIORITY (1h SLA)
+        AR-->>ING: Action plan
+
+        Note over AR: Override Rule 4: If invoice_numbers empty<br/>→ LOG_DISPUTE with "UNKNOWN — manual lookup"<br/><br/>Override Rule 7: If multiple invoices<br/>→ separate LOG_DISPUTE per invoice
+
+        ING->>RP: Package for review
+        RP-->>UI: Review package (PRIORITY badge)
+        ING->>AUD: Log: classification + draft
+
+        UI->>UI: AR Specialist reviews (1h SLA)
+        alt Approved
+            UI->>SAP: LOG_DISPUTE (dispute_type, amount, claim)
+            Note over SAP: Create dispute case in FS2<br/>Record type from sub-category
+            SAP-->>UI: Dispute case ID created
+            UI->>OL: Send dispute acknowledgement
+            UI->>AUD: Log: approved + dispute logged + sent
+        end
+
+    %% ════════════════════════════════════════════════
+    %% S14 — Credit Note Request
+    %% ════════════════════════════════════════════════
+    else S14 — CREDIT_NOTE_REQUEST (customer requests credit note)
+        Note over EC: Category: CREDIT_NOTE_REQUEST<br/>Confidence: ~0.87<br/>Priority: MEDIUM<br/>Distinct from INVOICE_DISPUTE:<br/>customer accepts invoice was issued<br/>but requests financial correction<br/>Extracted: invoice_numbers, amounts
+        EC-->>ING: Classification result
+
+        ING->>RD: Draft credit note acknowledgement
+        Note over RD: Tone: EMPATHETIC<br/>Acknowledge request<br/>Explain credit note process<br/>DO NOT promise issuance<br/>(requires supervisor approval)
+        RD-->>ING: Draft text (EMPATHETIC tone)
+
+        ING->>AR: Route actions
+        Note over AR: Actions:<br/>1. LOG_EVENT(credit_note_requested)<br/>2. SEND_EMAIL(acknowledgement)<br/>Approval: SUPERVISOR (30min SLA)<br/><br/>Credit note issuance requires<br/>supervisor business judgment
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        RP-->>UI: Review package (SUPERVISOR badge)
+        ING->>AUD: Log: classification + draft
+
+        UI->>UI: Supervisor reviews (30min SLA)
+        alt Approved
+            UI->>SAP: LOG_EVENT: credit_note_requested
+            Note over SAP: Flag for finance review<br/>Different SAP document type<br/>than dispute case (credit memo)
+            UI->>OL: Send acknowledgement
+            UI->>AUD: Log: approved + logged + sent
+        end
+    end

@@ -1,0 +1,139 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4A90D9', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#2C6FAC', 'lineColor': '#1a1a1a', 'secondaryColor': '#f0f4f8', 'tertiaryColor': '#e8f4f8', 'signalColor': '#1a1a1a', 'signalTextColor': '#1a1a1a', 'activationBkgColor': '#d4e9f7'}}}%%
+%% AR Email Management - Escalation & No-Draft Flows
+%% End-to-end sequences for categories that SKIP the ResponseDrafter entirely:
+%%   S8  / ESCALATION_LEGAL  — legal/threatening language → immediate escalation
+%%   S12 / AUTO_REPLY        — OOO/auto-reply → log and archive (rule engine, no LLM)
+%%   --  / UNCLASSIFIED      — low confidence → supervisor escalation → reclassify
+%%   --  / INTERNAL_NOTE     — internal sender → no action
+%%
+%% These are the ONLY 4 categories where no AI draft is generated.
+%% Override Rules 1 & 2 enforce: no SEND_EMAIL for ESCALATION_LEGAL or UNCLASSIFIED.
+%%
+%% Source: prompts/ResponseDrafter.md (No-Draft Rules), prompts/ActionRouter.md (Override Rules 1-2)
+
+sequenceDiagram
+    autonumber
+
+    participant OL as Outlook<br/>(Graph API)
+    participant ING as Email Ingestion<br/>Service
+    participant RE as Rule Engine<br/>Pre-Filter
+    participant TS as ThreadSummarizer
+    participant EC as EmailClassifier
+    participant AR as ActionRouter
+    participant RP as ReviewPresenter
+    participant UI as Approval UI<br/>(Alevate / SAP)
+    participant LT as Legal Team
+    participant SUP as Supervisor
+    participant AUD as Audit Store
+
+    %% ════════════════════════════════════════════════
+    %% Common: Email arrives
+    %% ════════════════════════════════════════════════
+    OL->>ING: Webhook: new email notification
+    ING->>OL: Fetch email content + metadata
+    OL-->>ING: Email JSON
+    ING->>RE: Apply rule engine pre-filter
+
+    %% ════════════════════════════════════════════════
+    %% S12 — AUTO_REPLY (detected by rule engine, no LLM)
+    %% ════════════════════════════════════════════════
+    alt S12 — AUTO_REPLY (rule engine detection — NO LLM call)
+        Note over RE: Detection signals:<br/>• X-Auto-Reply header<br/>• Auto-Submitted: auto-replied<br/>• Subject: "Out of Office" / "Automatic Reply"<br/>• Templated OOO body with no AR content
+
+        RE-->>ING: AUTO_REPLY detected (confidence >= 0.95)
+
+        Note over ING: ResponseDrafter: SKIPPED<br/>No customer response needed
+
+        ING->>AR: Route actions (category: AUTO_REPLY)
+        Note over AR: Actions:<br/>1. LOG_EVENT(auto_reply_received)<br/>Approval: STANDARD<br/><br/>No SEND_EMAIL. No escalation.<br/>Log and archive only.
+        AR-->>ING: Action plan
+
+        ING->>AUD: Log: AUTO_REPLY classified + archived
+        Note over ING: Processing complete.<br/>No review queue entry needed.<br/>Consider scheduling follow-up<br/>after contact returns (if OOO<br/>includes return date).
+
+    %% ════════════════════════════════════════════════
+    %% S8 — ESCALATION_LEGAL (legal/threatening language)
+    %% ════════════════════════════════════════════════
+    else S8 — ESCALATION_LEGAL (legal threats detected)
+        RE-->>ING: No rule match — requires AI
+        ING->>TS: Summarize thread
+        TS-->>ING: Thread summary
+        ING->>EC: Classify email
+
+        Note over EC: Category: ESCALATION_LEGAL<br/>Confidence: ~0.98<br/>Urgency: CRITICAL<br/>Priority: HIGH<br/><br/>Signals detected:<br/>• "formal notice"<br/>• "legal counsel" / "proceedings"<br/>• "without prejudice"<br/>• Sender: legal@... domain
+        EC-->>ING: Classification result
+
+        Note over ING: ResponseDrafter: SKIPPED<br/>WARNING: "ESCALATION_LEGAL: No AI draft<br/>generated. Requires human-only response<br/>crafted with legal team involvement.<br/>Do not send any automated or<br/>AI-drafted reply."
+
+        ING->>AR: Route actions (category: ESCALATION_LEGAL)
+        Note over AR: Override Rule 1 ENFORCED:<br/>Strip ALL actions except ESCALATE<br/>No SEND_EMAIL. No LOG_DISPUTE.<br/>Legal team takes full ownership.<br/><br/>Actions:<br/>1. ESCALATE(legal_team)<br/>Approval: LEGAL (15min SLA)
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        Note over RP: Package includes:<br/>• Original email (preserved as evidence)<br/>• Thread summary + escalation history<br/>• Classification with CRITICAL urgency<br/>• NO draft (explicitly marked)<br/>• ESCALATE action only
+        RP-->>UI: Review package (LEGAL badge, 15min SLA)
+        ING->>AUD: Log: ESCALATION_LEGAL classified + escalation triggered
+
+        UI->>UI: Legal queue — immediate attention
+        alt Escalation Approved
+            UI->>LT: Route to legal team
+            Note over LT: Legal team handles ALL actions:<br/>• Compose human-authored response<br/>• Coordinate with legal counsel<br/>• Determine dispute/negotiation strategy<br/>• No AI involvement in response
+            LT->>OL: Send human-crafted response (if any)
+            LT->>AUD: Log: legal team action + outcome
+        end
+
+    %% ════════════════════════════════════════════════
+    %% UNCLASSIFIED (low confidence — human reclassification)
+    %% ════════════════════════════════════════════════
+    else UNCLASSIFIED (confidence below 0.75 threshold)
+        RE-->>ING: No rule match — requires AI
+        ING->>TS: Summarize thread
+        TS-->>ING: Thread summary
+        ING->>EC: Classify email
+
+        Note over EC: Category: UNCLASSIFIED<br/>Confidence: 0.35 (below 0.75 threshold)<br/>Best guess in reasoning field<br/>Urgency: MEDIUM<br/><br/>Escalation condition E1 triggered:<br/>"Confidence below threshold"
+        EC-->>ING: Classification result (with escalation flag)
+
+        Note over ING: ResponseDrafter: SKIPPED<br/>WARNING: "UNCLASSIFIED: No draft generated.<br/>Email classification confidence is below<br/>threshold. Human must classify and determine<br/>response manually."
+
+        ING->>AR: Route actions (category: UNCLASSIFIED)
+        Note over AR: Override Rule 2 ENFORCED:<br/>Strip ALL actions except ESCALATE<br/>No SEND_EMAIL for unclassified emails.<br/><br/>Actions:<br/>1. ESCALATE(supervisor)<br/>Approval: SUPERVISOR (30min SLA)
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        Note over RP: Package includes:<br/>• Original email<br/>• AI best guess + confidence in reasoning<br/>• NO draft<br/>• Supervisor must classify manually
+        RP-->>UI: Review package (SUPERVISOR badge)
+        ING->>AUD: Log: UNCLASSIFIED + low confidence escalation
+
+        UI->>SUP: Supervisor reviews email
+        Note over SUP: Supervisor actions:<br/>1. Read original email<br/>2. Review AI's best guess<br/>3. Assign correct category manually<br/>4. Pipeline restarts from ResponseDrafter
+        alt Reclassified
+            SUP->>EC: Override category (manual classification)
+            Note over EC: New category assigned by supervisor<br/>Pipeline restarts from ResponseDrafter<br/>with human-assigned category
+            EC->>ING: Updated classification
+            ING->>AUD: Log: reclassified by supervisor
+            Note over ING: Pipeline continues with new category:<br/>→ ResponseDrafter (if draft-eligible)<br/>→ ActionRouter<br/>→ ReviewPresenter<br/>→ Normal approval flow
+        else Cannot classify
+            SUP->>AUD: Log: manual handling required
+            Note over SUP: Supervisor handles manually<br/>outside the AI pipeline
+        end
+
+    %% ════════════════════════════════════════════════
+    %% INTERNAL_NOTE (sender domain matches AR team)
+    %% ════════════════════════════════════════════════
+    else INTERNAL_NOTE (internal team communication)
+        RE-->>ING: No rule match — requires AI
+        ING->>EC: Classify email (sender domain check)
+
+        Note over EC: Category: INTERNAL_NOTE<br/>Confidence: ~0.95<br/>Priority: LOW<br/><br/>Classification Rule 5:<br/>Sender domain matches AR team domain<br/>→ INTERNAL_NOTE regardless of content
+        EC-->>ING: Classification result
+
+        Note over ING: ResponseDrafter: SKIPPED<br/>WARNING: "INTERNAL_NOTE: No draft generated.<br/>Internal team communication does not<br/>require a customer response."
+
+        ING->>AR: Route actions (category: INTERNAL_NOTE)
+        Note over AR: Actions:<br/>1. NO_ACTION<br/>Approval: STANDARD<br/><br/>No customer response. No system action.<br/>Internal routing handled outside AI pipeline.
+        AR-->>ING: Action plan
+
+        ING->>AUD: Log: INTERNAL_NOTE classified + no action
+        Note over ING: Processing complete.<br/>No review queue entry.<br/>Internal notes visible in thread<br/>history for context.
+    end

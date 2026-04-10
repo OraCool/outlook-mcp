@@ -1,0 +1,125 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#0078D4', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#005A9E', 'lineColor': '#2d2d2d', 'secondaryColor': '#f0f4f8', 'tertiaryColor': '#ffffff'}}}%%
+%% AR Email Management - Multi-Invoice Thread Processing (S13)
+%% Shows the fan-out  fan-in pattern for emails referencing multiple invoices.
+%% Each invoice gets its own per-invoice actions while shared actions remain singular.
+%% Approval route is determined by the highest-priority action across all invoices.
+%% 
+%% Key: ADR-008 multi-label classification + ActionRouter Override Rule 7
+%% 
+%% Source: prompts/EmailClassifier.md (multi-intent rules),
+%%         prompts/ActionRouter.md (Override Rule 7),
+%%         decisions/ADR-008-taxonomy-reconciliation.md
+
+
+ flowchart TD
+
+    %% ════════════════════════════════════════════════
+    %% ENTRY
+    %% ════════════════════════════════════════════════
+    START(["Inbound email references<br/>multiple invoices"]) --> INGEST
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Email Ingestion & Classification
+    %% ════════════════════════════════════════════════
+    subgraph ingestion["Ingestion & Multi-Label Classification"]
+        INGEST["Fetch email via Graph API<br/>Extract invoice references:<br/>INV-001, INV-002, INV-003"] --> THREAD["ThreadSummarizer:<br/>reconstruct thread context<br/>for all referenced invoices"]
+        THREAD --> CLASSIFY["EmailClassifier:<br/>Analyze email for all intents"]
+
+        CLASSIFY --> MULTI{"Multiple category<br/>signals detected?"}
+        MULTI -- "Yes" --> MULTI_LABEL["Multi-label output (ADR-008):<br/>categories: [primary, secondary, ...]<br/>Max 3 labels<br/>Confidence reduced by 0.05-0.10"]
+        MULTI -- "No — single intent<br/>applies to all invoices" --> SINGLE_LABEL["Single category<br/>applied to all invoices"]
+
+        MULTI_LABEL --> EXAMPLE["Example classification:<br/>category: INVOICE_DISPUTE (primary)<br/>categories: [INVOICE_DISPUTE,<br/>  PAYMENT_CONFIRMATION,<br/>  INVOICE_NOT_RECEIVED]<br/>confidence: 0.82"]
+        SINGLE_LABEL --> EXAMPLE2["Example: PARTIAL_PAYMENT_NOTE<br/>for all 3 invoices"]
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Response Drafting
+    %% ════════════════════════════════════════════════
+    subgraph drafting["Response Drafting"]
+        EXAMPLE --> DRAFT
+        EXAMPLE2 --> DRAFT
+        DRAFT["ResponseDrafter:<br/>Draft SINGLE consolidated response<br/>addressing all invoices and intents"]
+        DRAFT --> DRAFT_OUT["Output: one draft email<br/>covering all points<br/>Tone: driven by primary category"]
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Action Routing — Fan-Out
+    %% ════════════════════════════════════════════════
+    subgraph fanout["ActionRouter: Per-Invoice Fan-Out (Override Rule 7)"]
+        DRAFT_OUT --> ROUTE["ActionRouter receives:<br/>classification + extracted_data<br/>+ multiple invoice_numbers"]
+
+        ROUTE --> SPLIT{"Override Rule 7:<br/>Multiple invoices<br/>detected"}
+
+        %% Per-invoice actions — each invoice gets its own
+        SPLIT --> INV1_HEADER["Invoice INV-001<br/>(INVOICE_DISPUTE / PRICING)"]
+        SPLIT --> INV2_HEADER["Invoice INV-002<br/>(PAYMENT_CONFIRMATION)"]
+        SPLIT --> INV3_HEADER["Invoice INV-003<br/>(INVOICE_NOT_RECEIVED)"]
+
+        INV1_HEADER --> INV1_ACT["Per-invoice actions:<br/>1. LOG_DISPUTE<br/>   dispute_type: pricing_error<br/>   invoice: INV-001<br/>   priority: HIGH"]
+
+        INV2_HEADER --> INV2_ACT["Per-invoice actions:<br/>1. TRIGGER_RECONCILIATION<br/>   type: full_payment<br/>   invoice: INV-002<br/>   priority: LOW"]
+
+        INV3_HEADER --> INV3_ACT["Per-invoice actions:<br/>1. LOG_EVENT<br/>   invoice_resent<br/>   invoice: INV-003<br/>   priority: LOW"]
+
+        %% Shared action — remains singular
+        INV1_ACT --> SHARED
+        INV2_ACT --> SHARED
+        INV3_ACT --> SHARED
+
+        SHARED["Shared action (singular):<br/>SEND_EMAIL<br/>response_type: combined_acknowledgement<br/>invoice_numbers: [INV-001, INV-002, INV-003]"]
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Approval Route Determination
+    %% ════════════════════════════════════════════════
+    subgraph approval_route["Approval Route Determination"]
+        SHARED --> PRIORITY_CALC{"Determine approval route:<br/>highest-priority action<br/>across ALL invoices"}
+
+        PRIORITY_CALC -- "INV-001: LOG_DISPUTE → PRIORITY" --> WINNER
+        PRIORITY_CALC -- "INV-002: TRIGGER_RECONCILIATION → STANDARD" --> WINNER
+        PRIORITY_CALC -- "INV-003: LOG_EVENT → STANDARD" --> WINNER
+
+        WINNER["Approval route: PRIORITY (1h SLA)<br/>Driven by INV-001 dispute action<br/>(highest priority wins)"]
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Review Presenter — Fan-In
+    %% ════════════════════════════════════════════════
+    subgraph fanin["ReviewPresenter: Grouped Review Package (Fan-In)"]
+        WINNER --> PRESENT["ReviewPresenter:<br/>Assemble grouped review package"]
+
+        PRESENT --> PACKAGE["Review package contains:<br/><br/>📋 Overall:<br/>• PRIORITY badge (1h SLA)<br/>• Combined draft email<br/>• Thread summary<br/><br/>📄 Per-Invoice Breakdown:<br/>INV-001: DISPUTE (PRICING)<br/>  Action: LOG_DISPUTE in SAP | Priority: HIGH<br/>INV-002: PAYMENT_CONFIRMATION<br/>  Action: TRIGGER_RECONCILIATION | Priority: LOW<br/>INV-003: INVOICE_NOT_RECEIVED<br/>  Action: LOG_EVENT + resend | Priority: LOW<br/><br/>📧 Shared: SEND_EMAIL (combined ack)"]
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Human Approval
+    %% ════════════════════════════════════════════════
+    subgraph human_approval["Human Approval (Grouped)"]
+        PACKAGE --> REVIEW["AR Specialist reviews<br/>grouped package<br/>1h SLA (PRIORITY)"]
+
+        REVIEW --> DECISION{"Review decision"}
+
+        DECISION -- "Approve all" --> EXEC_ALL["Execute all actions in order:<br/>1. LOG_DISPUTE (INV-001) → SAP<br/>2. TRIGGER_RECONCILIATION (INV-002) → SAP<br/>3. LOG_EVENT (INV-003) → SAP<br/>4. SEND_EMAIL (combined) → Outlook"]
+
+        DECISION -- "Partial approve" --> EXEC_PARTIAL["Approve some, reject others:<br/>• Approved actions execute<br/>• Rejected actions logged with reason<br/>• Draft may need editing to<br/>  remove rejected invoice refs"]
+
+        DECISION -- "Reject all" --> REJECT_ALL["All actions rejected<br/>Reason logged<br/>Manual handling required"]
+
+        DECISION -- "Escalate" --> ESCALATE_ALL["Entire package escalated<br/>to supervisor<br/>All invoices handled together"]
+    end
+
+    EXEC_ALL --> AUDIT[/Audit: per-invoice outcomes logged/]
+    EXEC_PARTIAL --> AUDIT
+    REJECT_ALL --> AUDIT
+    ESCALATE_ALL --> AUDIT
+
+    %% ════════════════════════════════════════════════
+    %% Styling
+    %% ════════════════════════════════════════════════
+    style ingestion fill:#e8f4fd,stroke:#2196f3,stroke-width:2px
+    style drafting fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style fanout fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style approval_route fill:#fce4ec,stroke:#e91e63,stroke-width:2px
+    style fanin fill:#e0f2f1,stroke:#009688,stroke-width:2px
+    style human_approval fill:#e8f5e9,stroke:#4caf50,stroke-width:2px

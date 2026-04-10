@@ -1,0 +1,151 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#0078D4', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#005A9E', 'lineColor': '#2d2d2d', 'secondaryColor': '#f0f4f8', 'tertiaryColor': '#ffffff'}}}%%
+%% AR Email Management - Classification Decision Tree
+%% Shows the complete email classification logic from arrival through rule engine
+%% pre-filter, LLM classification, escalation checks (E1-E7), multi-intent handling,
+%% and sub-category assignment per ADR-008.
+%% 
+%% Source: prompts/EmailClassifier.md, decisions/ADR-001, decisions/ADR-008
+
+flowchart TD
+
+    %% ════════════════════════════════════════════════
+    %% ENTRY: New Email
+    %% ════════════════════════════════════════════════
+    START([New email received]) --> STRIP[Strip quoted/forwarded content]
+    STRIP --> RULE_ENGINE
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Rule Engine Pre-Filter (Layer 1 — ADR-001)
+    %% Fast, deterministic checks before LLM invocation
+    %% ════════════════════════════════════════════════
+    subgraph rule_engine["Rule Engine Pre-Filter (Layer 1)"]
+        RULE_ENGINE{"Rule Engine<br/>Pre-Filter"} -- "X-Auto-Reply header<br/>or Auto-Submitted header<br/>or OOO subject pattern" --> AUTO_OUT["AUTO_REPLY<br/>confidence >= 0.95"]
+        AUTO_OUT --> AUTO_CHECK{"Substantive AR<br/>content in body?"}
+        AUTO_CHECK -- "No — pure OOO" --> CLASSIFIED_AUTO[/"Category: AUTO_REPLY<br/>No further processing"/]
+        AUTO_CHECK -- "Yes — e.g., OOO + dispute" --> LLM_START
+
+        RULE_ENGINE -- "Sender domain =<br/>AR team domain" --> INTERNAL_OUT["INTERNAL_NOTE"]
+        INTERNAL_OUT --> CLASSIFIED_INTERNAL[/"Category: INTERNAL_NOTE<br/>No customer response"/]
+
+        RULE_ENGINE -- "Known bounce-back<br/>or delivery failure" --> LOG_BOUNCE[Log and archive]
+
+        RULE_ENGINE -- "No rule match —<br/>requires AI analysis" --> LLM_START
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: LLM Classification (Layer 2 — ADR-001)
+    %% ════════════════════════════════════════════════
+    subgraph llm_classification["LLM Classification (Layer 2)"]
+        LLM_START["Assemble context:<br/>email + thread_summary<br/>+ customer_id + invoice_refs<br/>+ previous_classifications"] --> LLM_CALL["EmailClassifier LLM call<br/>temperature=0"]
+        LLM_CALL --> LLM_OUT["Output: category + confidence<br/>+ intent + extracted_data"]
+
+        %% ════════════════════════════════════════════════
+        %% Escalation Condition Checks (E1-E7)
+        %% ════════════════════════════════════════════════
+        LLM_OUT --> E5{"E5: Body < 20 words<br/>or garbled?"}
+        E5 -- "Yes" --> UNCLASS_GARBLED["UNCLASSIFIED<br/>confidence = 0.0"]
+        UNCLASS_GARBLED --> ESC_GARBLED[/"Escalation: Email body too<br/>short or garbled"/]
+
+        E5 -- "No" --> E2{"E2: Legal/threatening<br/>language detected?"}
+        E2 -- "Yes — formal notice,<br/>lawyers, proceedings,<br/>without prejudice" --> LEGAL_OUT["ESCALATION_LEGAL<br/>urgency = CRITICAL"]
+        LEGAL_OUT --> ESC_LEGAL[/"Escalation: Legal team<br/>review required"/]
+
+        E2 -- "No" --> E3{"E3: Unsupported<br/>language?"}
+        E3 -- "Yes — not EN/DE/FR/ES/IT/NL" --> UNCLASS_LANG["UNCLASSIFIED"]
+        UNCLASS_LANG --> ESC_LANG[/"Escalation: Unsupported<br/>language — human translation"/]
+
+        E3 -- "No" --> E1{"E1: Confidence<br/>>= 0.75?"}
+        E1 -- "No — low confidence" --> UNCLASS_LOW["UNCLASSIFIED<br/>(best guess in reasoning)"]
+        UNCLASS_LOW --> ESC_LOW[/"Escalation: Confidence below<br/>threshold — human review"/]
+
+        E1 -- "Yes" --> E4{"E4: Multiple intents<br/>with spread < 0.10?"}
+        E4 -- "Yes — ambiguous" --> MULTI_ESC["Primary category set<br/>+ escalation flag"]
+        MULTI_ESC --> ESC_MULTI[/"Escalation: Human<br/>disambiguation required"/]
+
+        E4 -- "No" --> E7{"E7: Amount ><br/>EUR 100,000?"}
+        E7 -- "Yes" --> HIGH_VALUE["Category preserved<br/>+ escalation flag"]
+        HIGH_VALUE --> ESC_VALUE[/"Escalation: High-value<br/>transaction — supervisor review"/]
+
+        E7 -- "No" --> E6{"E6: Customer references<br/>prior commitment not<br/>in thread?"}
+        E6 -- "Yes" --> COMMIT_ESC["Category preserved<br/>+ escalation flag"]
+        COMMIT_ESC --> ESC_COMMIT[/"Escalation: Verify prior<br/>agreement in records"/]
+
+        E6 -- "No" --> MULTI_CHECK
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Multi-Intent Handling (ADR-008)
+    %% ════════════════════════════════════════════════
+    subgraph multi_intent["Multi-Intent Handling"]
+        MULTI_CHECK{"Multiple category<br/>signals detected?"}
+
+        MULTI_CHECK -- "Yes — multi-label" --> PRIORITY_SELECT["Select primary by hierarchy:<br/>ESCALATION_LEGAL ><br/>INVOICE_DISPUTE ><br/>EXTENSION_REQUEST ><br/>PARTIAL_PAYMENT_NOTE ><br/>PAYMENT_PROMISE ><br/>PAYMENT_CONFIRMATION ><br/>CREDIT_NOTE_REQUEST ><br/>INVOICE_NOT_RECEIVED ><br/>BALANCE_INQUIRY ><br/>REMITTANCE_ADVICE ><br/>BILLING_UPDATE ><br/>PAYMENT_REMINDER_SENT ><br/>INTERNAL_NOTE ><br/>AUTO_REPLY"]
+        PRIORITY_SELECT --> MULTI_OUT["Set category = primary<br/>Set categories = all labels (max 3)<br/>Reduce confidence by 0.05-0.10"]
+        MULTI_OUT --> SUBCAT
+
+        MULTI_CHECK -- "No — single intent" --> SUBCAT
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Sub-Category Assignment (ADR-008)
+    %% ════════════════════════════════════════════════
+    subgraph subcategory["Sub-Category Assignment (ADR-008)"]
+        SUBCAT{"Primary category<br/>has sub-categories?"}
+
+        SUBCAT -- "INVOICE_DISPUTE" --> SUB_DISPUTE["Sub-category:<br/>PRICING | SHORT_PAYMENT |<br/>RETURNS_DAMAGES | GENERAL"]
+        SUBCAT -- "INVOICE_NOT_RECEIVED" --> SUB_INR["Sub-category:<br/>NOT_RECEIVED | COPY_REQUEST |<br/>POD_REQUEST"]
+        SUBCAT -- "BALANCE_INQUIRY" --> SUB_BAL["Sub-category:<br/>BALANCE_QUESTION |<br/>STATEMENT_REQUEST"]
+        SUBCAT -- "BILLING_UPDATE" --> SUB_BILL["Sub-category:<br/>ADDRESS_CHANGE |<br/>CONTACT_CHANGE |<br/>PAYMENT_METHOD_INQUIRY"]
+        SUBCAT -- "PAYMENT_PROMISE" --> SUB_PROM["Sub-category:<br/>FIRM_COMMITMENT |<br/>STALLING_UNDER_REVIEW"]
+        SUBCAT -- "INTERNAL_NOTE" --> SUB_INT["Sub-category:<br/>APPROVAL_CREDIT_MEMO |<br/>APPROVAL_WRITE_OFF |<br/>APPROVAL_DISPUTE_RESOLUTION |<br/>GENERAL_INTERNAL"]
+        SUBCAT -- "No sub-categories<br/>(other categories)" --> NO_SUB["sub_category = null"]
+
+        SUB_DISPUTE --> PRIORITY_ASSIGN
+        SUB_INR --> PRIORITY_ASSIGN
+        SUB_BAL --> PRIORITY_ASSIGN
+        SUB_BILL --> PRIORITY_ASSIGN
+        SUB_PROM --> PRIORITY_ASSIGN
+        SUB_INT --> PRIORITY_ASSIGN
+        NO_SUB --> PRIORITY_ASSIGN
+    end
+
+    %% ════════════════════════════════════════════════
+    %% SUBGRAPH: Priority & Output Assembly
+    %% ════════════════════════════════════════════════
+    subgraph output_assembly["Priority Assignment & Output"]
+        PRIORITY_ASSIGN{"Assign priority"}
+        PRIORITY_ASSIGN -- "Disputes, legal,<br/>overdue > 60 days" --> PRI_HIGH["Priority: HIGH"]
+        PRIORITY_ASSIGN -- "Promises, extensions,<br/>overdue < 60 days" --> PRI_MED["Priority: MEDIUM"]
+        PRIORITY_ASSIGN -- "Confirmations, inquiries,<br/>auto-replies" --> PRI_LOW["Priority: LOW"]
+
+        PRI_HIGH --> FINAL_OUT
+        PRI_MED --> FINAL_OUT
+        PRI_LOW --> FINAL_OUT
+
+        FINAL_OUT["Classification Result:<br/>category + sub_category +<br/>categories[] + confidence +<br/>priority + summary + language +<br/>intent + reasoning +<br/>extracted_data + suggested_actions +<br/>escalation"]
+    end
+
+    FINAL_OUT --> NEXT(["To ResponseDrafter<br/>or ActionRouter"])
+
+    %% ════════════════════════════════════════════════
+    %% Escalation outputs also feed into pipeline
+    %% ════════════════════════════════════════════════
+    ESC_GARBLED --> NEXT
+    ESC_LEGAL --> NEXT
+    ESC_LANG --> NEXT
+    ESC_LOW --> NEXT
+    ESC_MULTI --> NEXT
+    ESC_VALUE --> NEXT
+    ESC_COMMIT --> NEXT
+    CLASSIFIED_AUTO --> DONE_AUTO([Archive — no pipeline])
+    CLASSIFIED_INTERNAL --> DONE_INT([Log only — no pipeline])
+    LOG_BOUNCE --> DONE_BOUNCE([Archive — no pipeline])
+
+    %% ════════════════════════════════════════════════
+    %% Styling
+    %% ════════════════════════════════════════════════
+    style rule_engine fill:#e8f4fd,stroke:#2196f3,stroke-width:2px
+    style llm_classification fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style multi_intent fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style subcategory fill:#e0f2f1,stroke:#009688,stroke-width:2px
+    style output_assembly fill:#e8f5e9,stroke:#4caf50,stroke-width:2px

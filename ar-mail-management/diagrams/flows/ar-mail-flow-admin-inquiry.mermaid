@@ -1,0 +1,144 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4A90D9', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#2C6FAC', 'lineColor': '#1a1a1a', 'secondaryColor': '#f0f4f8', 'tertiaryColor': '#e8f4f8', 'signalColor': '#1a1a1a', 'signalTextColor': '#1a1a1a', 'activationBkgColor': '#d4e9f7'}}}%%
+%% AR Email Management - Administrative & Inquiry Flows
+%% End-to-end sequences for administrative and inquiry scenarios:
+%%   S6  / EXTENSION_REQUEST  — customer requests payment extension
+%%   S11 / BALANCE_INQUIRY    — customer queries outstanding balance
+%%   S15 / BILLING_UPDATE     — customer notifies billing contact/address change
+%%
+%% Source: prompts/EmailClassifier.md, prompts/ResponseDrafter.md, prompts/ActionRouter.md
+
+sequenceDiagram
+    autonumber
+
+    participant OL as Outlook<br/>(Graph API)
+    participant ING as Email Ingestion<br/>Service
+    participant TS as ThreadSummarizer
+    participant EC as EmailClassifier
+    participant RD as ResponseDrafter
+    participant AR as ActionRouter
+    participant RP as ReviewPresenter
+    participant UI as Approval UI<br/>(Alevate / SAP)
+    participant SAP as SAP FS2/S4
+    participant AUD as Audit Store
+
+    %% ════════════════════════════════════════════════
+    %% Common Ingestion
+    %% ════════════════════════════════════════════════
+    Note over OL,AUD: Common Ingestion Phase
+
+    OL->>ING: Webhook: new email notification
+    ING->>OL: Fetch email content + metadata
+    OL-->>ING: Email JSON
+    ING->>TS: Summarize thread (if > 3 emails)
+    TS-->>ING: Thread summary
+    ING->>EC: Classify email
+
+    %% ════════════════════════════════════════════════
+    %% S6 — Extension Request
+    %% ════════════════════════════════════════════════
+    alt S6 — EXTENSION_REQUEST (customer requests more time to pay)
+        Note over EC: Category: EXTENSION_REQUEST<br/>Confidence: ~0.91<br/>Priority: MEDIUM<br/>Extracted: promised_date (new date),<br/>invoice_numbers
+        EC-->>ING: Classification result
+
+        ING->>RD: Draft extension acknowledgement
+        Note over RD: Tone: EMPATHETIC<br/>Show understanding of cash flow constraints<br/>Confirm request is under review<br/>DO NOT confirm approval<br/>(requires supervisor decision)<br/>Note: original payment terms remain in<br/>effect until revised in writing
+        RD-->>ING: Draft text (EMPATHETIC tone)
+
+        ING->>AR: Route actions
+        Note over AR: Actions:<br/>1. LOG_EVENT(extension_requested)<br/>   metadata: requested_extension_date<br/>2. SEND_EMAIL(extension_acknowledgement)<br/>   Draft does NOT commit to approval<br/>Approval: SUPERVISOR (30min SLA)<br/><br/>Note: If supervisor approves extension,<br/>a separate UPDATE_SAP_DATE action<br/>will update the payment deadline
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        RP-->>UI: Review package (SUPERVISOR badge)
+        ING->>AUD: Log: classification + draft
+
+        UI->>UI: Supervisor reviews (30min SLA)
+        Note over UI: Business judgment required:<br/>• Customer payment history<br/>• Amount and aging<br/>• Relationship value
+        alt Approved (extension granted)
+            UI->>SAP: LOG_EVENT: extension_requested
+            UI->>SAP: UPDATE expected_payment_date (new date)
+            SAP-->>UI: Confirmed
+            UI->>OL: Send acknowledgement (receipt of request)
+            UI->>AUD: Log: approved + SAP updated + sent
+        else Approved (extension denied)
+            UI->>UI: Edit draft to inform denial
+            UI->>SAP: LOG_EVENT: extension_requested (denied)
+            UI->>OL: Send edited response
+            UI->>AUD: Log: denied + edited + sent
+        end
+
+    %% ════════════════════════════════════════════════
+    %% S11 — Balance Inquiry
+    %% ════════════════════════════════════════════════
+    else S11 — BALANCE_INQUIRY (customer queries outstanding balance)
+
+        %% Sub-category branching
+        alt Sub-category: BALANCE_QUESTION
+            Note over EC: Category: BALANCE_INQUIRY<br/>Sub-category: BALANCE_QUESTION<br/>Confidence: ~0.90<br/>Priority: LOW<br/>Customer asks: "What do we owe?"
+        else Sub-category: STATEMENT_REQUEST
+            Note over EC: Category: BALANCE_INQUIRY<br/>Sub-category: STATEMENT_REQUEST<br/>Confidence: ~0.92<br/>Priority: LOW<br/>Customer asks: "Send a statement"
+        end
+
+        EC-->>ING: Classification result
+
+        Note over ING,SAP: SAP balance retrieval required<br/>before draft can include specifics
+
+        ING->>RD: Draft balance response
+        Note over RD: Tone: FORMAL<br/>Provide factual balance information<br/>If invoice_data is null:<br/>→ use general language<br/>→ add warning for manual enrichment<br/>Offer format flexibility
+        RD-->>ING: Draft text (FORMAL tone)
+
+        ING->>AR: Route actions
+        Note over AR: Actions:<br/>1. SEND_EMAIL(balance_statement)<br/>Approval: STANDARD (4h SLA)
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        RP-->>UI: Review package
+        ING->>AUD: Log: classification + draft
+
+        UI->>UI: AR Specialist reviews
+        alt Approved
+            UI->>SAP: Retrieve customer balance / statement
+            SAP-->>UI: Balance data / statement PDF
+            UI->>UI: Attach balance details to draft
+            UI->>OL: Send balance statement email
+            UI->>AUD: Log: approved + sent
+        end
+
+    %% ════════════════════════════════════════════════
+    %% S15 — Billing Update
+    %% ════════════════════════════════════════════════
+    else S15 — BILLING_UPDATE (contact or address change notification)
+
+        %% Sub-category branching
+        alt Sub-category: ADDRESS_CHANGE
+            Note over EC: Category: BILLING_UPDATE<br/>Sub-category: ADDRESS_CHANGE<br/>Customer requests billing address update
+        else Sub-category: CONTACT_CHANGE
+            Note over EC: Category: BILLING_UPDATE<br/>Sub-category: CONTACT_CHANGE<br/>Customer provides new billing contact
+        else Sub-category: PAYMENT_METHOD_INQUIRY
+            Note over EC: Category: BILLING_UPDATE<br/>Sub-category: PAYMENT_METHOD_INQUIRY<br/>Customer asks about payment methods
+        end
+
+        Note over EC: Confidence: ~0.89<br/>Priority: LOW
+        EC-->>ING: Classification result
+
+        ING->>RD: Draft confirmation
+        Note over RD: Tone: FORMAL<br/>Acknowledge the update request<br/>Confirm it will be processed<br/>Note: actual SAP master data change<br/>requires separate approval path
+        RD-->>ING: Draft text (FORMAL tone)
+
+        ING->>AR: Route actions
+        Note over AR: Actions:<br/>1. LOG_EVENT(billing_update_requested)<br/>   metadata: change type from sub-category<br/>Approval: STANDARD (4h SLA)<br/><br/>Note: No SEND_EMAIL in default<br/>mapping — log only. Draft available<br/>if reviewer wants to send confirmation.
+        AR-->>ING: Action plan
+
+        ING->>RP: Package for review
+        RP-->>UI: Review package
+        ING->>AUD: Log: classification + draft
+
+        UI->>UI: AR Specialist reviews
+        alt Approved
+            UI->>SAP: LOG_EVENT: billing_update_requested
+            Note over SAP: Flag for master data team<br/>Separate governance approval<br/>required for SAP master data changes
+            SAP-->>UI: Event logged
+            UI->>AUD: Log: approved + logged
+            Note over UI: Master data update follows<br/>separate SAP governance workflow
+        end
+    end

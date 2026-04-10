@@ -1,4 +1,3 @@
-ar-mail-management
 .history
 
 # Local env and secrets (each package also ignores `.env` in its own tree)

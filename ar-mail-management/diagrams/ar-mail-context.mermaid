@@ -1,0 +1,52 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#0078D4', 'primaryTextColor': '#ffffff', 'primaryBorderColor': '#005A9E', 'lineColor': '#2d2d2d', 'secondaryColor': '#f0f4f8', 'tertiaryColor': '#ffffff'}}}%%
+%% AR Email Management - System Context Diagram (C4 Level 1)
+%% Shows the AR Email Management system and all external actors/systems it interacts with.
+%% Two user-facing paths: Alevate (interactive + headless) and SAP (headless via PAT Gateway).
+
+C4Context
+    title AR Email Management — System Context
+
+    %% ── Primary actor ──
+    Person(arSpecialist, "AR Specialist", "Reviews AI-generated drafts, approves or rejects proposed actions")
+
+    %% ── Core system boundary ──
+    System(arMailSystem, "AR Email Management System", "AI-powered email triage: classification, thread summarization, response drafting, action routing, and human approval")
+
+    %% ── External systems ──
+    System_Ext(outlook, "Microsoft Outlook", "AR team shared mailbox — inbound and outbound email")
+    System_Ext(graphApi, "Microsoft Graph API", "OAuth 2.0-secured email read/send and webhook notifications")
+    System_Ext(codemie, "CodeMie", "EPAM AI assistant platform hosting multi-agent workflow")
+    System_Ext(azureOpenAI, "Azure OpenAI (via LiteLLM)", "GPT-4o model inference for classification, summarization, and drafting")
+    System_Ext(sapErp, "SAP FS2 / S/4", "ERP — customer master data, invoice records, correspondence templates")
+    System_Ext(alevate, "Alevate", "AR operations platform with approval UI and headless SDK/API")
+    System_Ext(pingone, "PingOne", "Identity provider — OIDC authentication and JWT issuance")
+    System_Ext(patGateway, "PAT Gateway", "Token exchange — converts Alevate PAT to CodeMie-compatible JWT")
+    System_Ext(auditStore, "Audit Store (PostgreSQL)", "Immutable audit trail for every processing step and decision")
+
+    %% ── Relationships ──
+
+    %% User interactions
+    Rel(arSpecialist, alevate, "Reviews and approves AI drafts", "Browser / Alevate UI")
+    Rel(arSpecialist, sapErp, "Reviews and approves via SAP UI", "SAP GUI / Fiori")
+
+    %% Email path
+    Rel(arMailSystem, graphApi, "Reads email, sends approved replies", "REST / OAuth 2.0")
+    Rel(graphApi, outlook, "Accesses mailbox", "Exchange Online")
+
+    %% AI processing
+    Rel(arMailSystem, codemie, "Submits emails for multi-agent AI processing", "REST / A2A protocol")
+    Rel(codemie, azureOpenAI, "LLM inference calls", "HTTPS via LiteLLM proxy")
+
+    %% ERP data
+    Rel(arMailSystem, sapErp, "Fetches customer/invoice data and templates", "OData / RFC API")
+
+    %% Approval routing — two paths
+    Rel(arMailSystem, alevate, "Routes review packages for approval", "SDK / REST API")
+    Rel(alevate, patGateway, "SAP headless path — PAT token exchange", "HTTPS")
+    Rel(patGateway, codemie, "Forwards authenticated requests to CodeMie A2A API", "REST / JWT")
+
+    %% Identity
+    Rel(arMailSystem, pingone, "Authenticates users and services", "OIDC / OAuth 2.0")
+
+    %% Audit
+    Rel(arMailSystem, auditStore, "Logs every step: classification, draft, approval, action", "SQL / TLS")
