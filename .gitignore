@@ -1,4 +1,3 @@
-ar-mail-management
 .history
 
 # Local env and secrets (each package also ignores `.env` in its own tree)
@@ -6,6 +5,8 @@ ar-mail-management
 .env.local
 .env.*.local
 *.pem
+.claude
+.cursor
 
 # Python (repo root and stray artifacts)
 __pycache__/
@@ -27,3 +28,6 @@ langgraph-mcp-tester/.venv/
 .vscode/
 *.swp
 *.swo
+.mcp.json
+.playwright*
+ar-mail-management

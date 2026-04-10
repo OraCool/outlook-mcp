@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from outlook_mcp.auth.token_handler import GraphTokenMissingError
-from outlook_mcp.tools.email_writer import create_draft, send_email, set_message_categories
+from outlook_mcp.tools.email_writer import (
+    create_draft,
+    create_reply_draft,
+    mark_as_read,
+    move_email,
+    send_email,
+    set_message_categories,
+)
 
 
 class _SettingsDisabled:
@@ -165,3 +172,91 @@ async def test_send_email_http_error() -> None:
     data = json.loads(result)
     assert data["error"] == "http_error"
     assert data["status_code"] == 403
+
+
+@pytest.mark.asyncio
+async def test_mark_as_read_write_disabled() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsDisabled()):
+        result = await mark_as_read(ctx=None, message_id="m1", is_read=True)
+    data = json.loads(result)
+    assert data["error"] == "write_disabled"
+
+
+@pytest.mark.asyncio
+async def test_mark_as_read_success() -> None:
+    mock_client = AsyncMock()
+    mock_client.update_message = AsyncMock(return_value={})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await mark_as_read(ctx=None, message_id="mid-1", is_read=False)
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["is_read"] is False
+    mock_client.update_message.assert_awaited_once_with("mid-1", {"isRead": False})
+
+
+@pytest.mark.asyncio
+async def test_mark_as_read_network_error_sanitized() -> None:
+    mock_client = AsyncMock()
+    mock_client.update_message = AsyncMock(
+        side_effect=httpx.ConnectError("failed contact@evil.com", request=MagicMock()),
+    )
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await mark_as_read(ctx=None, message_id="mid-1")
+    data = json.loads(result)
+    assert data["error"] == "network_error"
+    assert "[EMAIL_REDACTED]" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_move_email_success() -> None:
+    mock_client = AsyncMock()
+    mock_client.move_message = AsyncMock(return_value={"id": "m1", "subject": "S"})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await move_email(ctx=None, message_id="m1", destination_folder_id="fid")
+    data = json.loads(result)
+    assert data["ok"] is True
+    mock_client.move_message.assert_awaited_once_with("m1", "fid")
+
+
+@pytest.mark.asyncio
+async def test_move_email_http_error() -> None:
+    mock_client = AsyncMock()
+    resp = MagicMock()
+    resp.status_code = 400
+    resp.text = "Bad"
+    mock_client.move_message = AsyncMock(
+        side_effect=httpx.HTTPStatusError("err", request=MagicMock(), response=resp),
+    )
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await move_email(ctx=None, message_id="m1", destination_folder_id="fid")
+    data = json.loads(result)
+    assert data["error"] == "http_error"
+    assert data["status_code"] == 400
+
+
+@pytest.mark.asyncio
+async def test_create_reply_draft_success() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_reply = AsyncMock(return_value={"id": "draft-1"})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await create_reply_draft(ctx=None, message_id="orig", comment="Hi")
+    data = json.loads(result)
+    assert data["ok"] is True
+    mock_client.create_reply.assert_awaited_once_with("orig", comment="Hi")
+
+
+@pytest.mark.asyncio
+async def test_create_reply_draft_without_comment() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_reply = AsyncMock(return_value={"id": "draft-2"})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await create_reply_draft(ctx=None, message_id="orig", comment=None)
+    data = json.loads(result)
+    assert data["ok"] is True
+    mock_client.create_reply.assert_awaited_once_with("orig", comment=None)

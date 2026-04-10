@@ -9,7 +9,7 @@ import httpx
 
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
-from outlook_mcp.tools._common import make_graph_client, tool_error_token
+from outlook_mcp.tools._common import make_graph_client, sanitize_client_error_message, tool_error_token
 from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
@@ -68,12 +68,12 @@ async def set_message_categories(ctx: Context, message_id: str, categories: list
             {
                 "error": "http_error",
                 "status_code": e.response.status_code,
-                "message": e.response.text[:2000],
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
             }
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"set_message_categories: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": str(e)})
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
 async def send_email(
@@ -121,9 +121,12 @@ async def send_email(
             {
                 "error": "http_error",
                 "status_code": e.response.status_code,
-                "message": e.response.text[:2000],
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
             }
         )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"send_email: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
 async def create_draft(
@@ -169,6 +172,109 @@ async def create_draft(
             {
                 "error": "http_error",
                 "status_code": e.response.status_code,
-                "message": e.response.text[:2000],
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
             }
         )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"create_draft: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> str:
+    """Mark a message as read (or unread). Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite."""
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {"error": "write_disabled", "message": "Set ENABLE_WRITE_OPERATIONS=true to enable mark_as_read."}
+        )
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"mark_as_read: message_id={message_id!r} is_read={is_read}")
+    try:
+        await client.update_message(message_id, {"isRead": is_read})
+        return json.dumps({"ok": True, "message_id": message_id, "is_read": is_read})
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"mark_as_read: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"mark_as_read: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+async def move_email(ctx: Context, message_id: str, destination_folder_id: str) -> str:
+    """Move a message to a different mail folder. Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
+
+    Use ``list_folders`` to discover folder IDs.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {"error": "write_disabled", "message": "Set ENABLE_WRITE_OPERATIONS=true to enable move_email."}
+        )
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"move_email: message_id={message_id!r} dest={destination_folder_id!r}")
+    try:
+        moved = await client.move_message(message_id, destination_folder_id)
+        return json.dumps({"ok": True, "message": moved}, indent=2)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"move_email: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"move_email: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+async def create_reply_draft(ctx: Context, message_id: str, comment: str | None = None) -> str:
+    """Create a reply draft for a message, pre-populated with sender, subject (RE:), and quoted body.
+
+    Optionally include a ``comment`` (reply text) to pre-fill the draft body.
+    Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {"error": "write_disabled", "message": "Set ENABLE_WRITE_OPERATIONS=true to enable create_reply_draft."}
+        )
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"create_reply_draft: message_id={message_id!r}")
+    try:
+        draft = await client.create_reply(message_id, comment=comment)
+        return json.dumps({"ok": True, "message": draft}, indent=2)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"create_reply_draft: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"create_reply_draft: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})

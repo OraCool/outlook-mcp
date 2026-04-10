@@ -82,31 +82,65 @@ class ClassificationIntent(BaseModel):
     urgency: str = Field(default="LOW", max_length=32)
 
 
+class SuggestedAction(BaseModel):
+    """A contextual next-action suggestion from the classifier."""
+
+    action: str = Field(default="", max_length=256)
+    description: str = Field(default="", max_length=1024)
+    priority: str = Field(default="secondary", max_length=16)
+
+
 class ExtractedData(BaseModel):
     """Invoice/payment-related fields parsed from classifier output."""
 
     promised_date: str | None = Field(default=None, max_length=64)
+    due_date: str | None = Field(default=None, max_length=64)
     disputed_amount: float | None = None
+    currency: str | None = Field(default=None, max_length=8)
     invoice_numbers: list[str] = Field(default_factory=list)
     payment_reference: str | None = Field(default=None, max_length=512)
 
 
 class ClassificationResult(BaseModel):
-    """Single-label AR taxonomy classification for one message (MCP sampling output)."""
+    """AR taxonomy classification for one message (MCP sampling output).
+
+    Supports hierarchical taxonomy per ADR-008: primary ``category`` +
+    optional ``sub_category`` + multi-label ``categories`` list.
+    """
 
     email_id: str = Field(max_length=512)
     category: str = Field(max_length=128)
+    sub_category: str | None = Field(default=None, max_length=128)
+    categories: list[str] = Field(default_factory=list)
     confidence: float
+    priority: str = Field(default="MEDIUM", max_length=16)
+    summary: str = Field(default="", max_length=1000)
+    language: str = Field(default="en", max_length=8)
     intent: ClassificationIntent = Field(default_factory=ClassificationIntent)
     reasoning: str = Field(default="", max_length=8000)
     extracted_data: ExtractedData = Field(default_factory=ExtractedData)
+    suggested_actions: list[SuggestedAction] = Field(default_factory=list)
     escalation: dict[str, Any] = Field(default_factory=dict)
+    thread_id: str | None = Field(default=None, max_length=512)
+    sender_company: str | None = Field(default=None, max_length=256)
 
     @model_validator(mode="after")
     def normalize_unknown_category(self) -> ClassificationResult:
-        if self.category not in get_classification_categories():
+        allowed = get_classification_categories()
+        if self.category not in allowed:
             self.category = "UNCLASSIFIED"
             self.confidence = min(float(self.confidence), 0.74)
+        # Normalize multi-label list: keep only known categories
+        if self.categories:
+            self.categories = [c for c in self.categories if c in allowed]
+        # Ensure primary category is first in categories list
+        if not self.categories or self.categories[0] != self.category:
+            self.categories = [self.category] + [c for c in self.categories if c != self.category]
+        # Cap categories to 3
+        self.categories = self.categories[:3]
+        # Normalize priority
+        if self.priority not in ("HIGH", "MEDIUM", "LOW"):
+            self.priority = "MEDIUM"
         return self
 
 
@@ -117,10 +151,13 @@ class ExtractionResult(BaseModel):
     invoice_numbers: list[str] = Field(default_factory=list)
     amounts: list[str] = Field(default_factory=list)
     dates: list[str] = Field(default_factory=list)
+    currency: str | None = Field(default=None, max_length=8)
+    due_dates: list[str] = Field(default_factory=list)
+    company_name: str | None = Field(default=None, max_length=256)
     payment_reference: str | None = Field(default=None, max_length=512)
     raw_notes: str = Field(default="", max_length=4000)
 
-    @field_validator("invoice_numbers", "amounts", "dates", mode="after")
+    @field_validator("invoice_numbers", "amounts", "dates", "due_dates", mode="after")
     @classmethod
     def cap_list_items(cls, v: list[str]) -> list[str]:
         out: list[str] = []

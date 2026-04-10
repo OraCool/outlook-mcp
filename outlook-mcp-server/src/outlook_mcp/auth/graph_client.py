@@ -41,6 +41,8 @@ class GraphMailClient:
     async def list_messages_by_conversation(
         self, conversation_id: str, top: int = 50, *, select: str | None = None
     ) -> dict[str, Any]:
+        """Return messages for a thread, sorted by ``receivedDateTime`` ascending (oldest first)."""
+
         # OData single quotes in filter must be doubled.
         # Do not add $orderby: Graph often returns 400 InefficientFilter for
         # $filter=conversationId combined with $orderby on /me/messages.
@@ -129,3 +131,32 @@ class GraphMailClient:
             if r.content:
                 return r.json()
             return {}
+
+    async def move_message(self, message_id: str, destination_id: str) -> dict[str, Any]:
+        """Move a message to a different folder. Returns the moved message."""
+        enc = _encode_message_id_for_path(message_id)
+        async with self._client() as c:
+            r = await c.post(f"/me/messages/{enc}/move", json={"destinationId": destination_id})
+            r.raise_for_status()
+            return r.json()
+
+    async def create_reply(self, message_id: str, comment: str | None = None) -> dict[str, Any]:
+        """Create a reply draft for a message (pre-populated with sender, subject, quoted body).
+
+        Returns the created draft message.
+        """
+        enc = _encode_message_id_for_path(message_id)
+        async with self._client() as c:
+            if comment:
+                r = await c.post(f"/me/messages/{enc}/createReply", json={"comment": comment})
+            else:
+                r = await c.post(f"/me/messages/{enc}/createReply")
+            r.raise_for_status()
+            return r.json()
+
+    async def list_folders(self, top: int = 100) -> dict[str, Any]:
+        """List mail folders for the signed-in user."""
+        async with self._client() as c:
+            r = await c.get("/me/mailFolders", params={"$top": str(top)})
+            r.raise_for_status()
+            return r.json()

@@ -253,3 +253,44 @@ async def list_master_categories(ctx: Context, top: int = 500) -> str:
         return json.dumps(
             {"error": "network_error", "message": sanitize_client_error_message(str(e))},
         )
+
+
+async def list_folders(ctx: Context, top: int = 100) -> str:
+    """List mail folders for the signed-in user (id, displayName, parentFolderId, childFolderCount, totalItemCount).
+
+    Useful for discovering folder IDs for ``move_email``.
+    """
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+    await tool_log_info(ctx, f"list_folders: start top={top}")
+    try:
+        data = await client.list_folders(top=top)
+        items = data.get("value") or []
+        folders = [
+            {
+                "id": f.get("id"),
+                "displayName": f.get("displayName"),
+                "parentFolderId": f.get("parentFolderId"),
+                "childFolderCount": f.get("childFolderCount"),
+                "totalItemCount": f.get("totalItemCount"),
+                "unreadItemCount": f.get("unreadItemCount"),
+            }
+            for f in items
+        ]
+        return json.dumps({"folders": folders, "count": len(folders)}, indent=2)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"list_folders: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"list_folders: network_error {type(e).__name__}")
+        return json.dumps(
+            {"error": "network_error", "message": sanitize_client_error_message(str(e))},
+        )

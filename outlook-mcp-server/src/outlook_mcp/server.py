@@ -9,7 +9,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from outlook_mcp.config import get_settings
-from outlook_mcp.tools import email_classifier, email_extractor, email_reader, email_writer
+from outlook_mcp.tools import email_classifier, email_drafter, email_extractor, email_reader, email_summarizer, email_writer
 
 
 def build_mcp() -> FastMCP:
@@ -134,6 +134,38 @@ def build_mcp() -> FastMCP:
         return await email_extractor.extract_email_data(message_id, ctx)
 
     @mcp.tool()
+    async def summarize_email(message_id: str, ctx: Context) -> str:
+        """Summarize a single email: 1-2 sentence summary with key entity extraction.
+
+        Uses MCP sampling to produce a concise summary capturing intent and key financial
+        context. Falls back to raw email JSON if sampling unavailable.
+        """
+        return await email_summarizer.summarize_email(message_id, ctx)
+
+    @mcp.tool()
+    async def summarize_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
+        """Summarize an entire email thread: progression, key facts, commitments, and state.
+
+        Fetches all messages sharing the conversationId and produces a thread summary via
+        MCP sampling. Useful for long threads where individual email context is insufficient.
+        """
+        return await email_summarizer.summarize_thread(conversation_id, ctx, top=top)
+
+    @mcp.tool()
+    async def draft_reply(
+        message_id: str,
+        ctx: Context,
+        classification_context: str | None = None,
+    ) -> str:
+        """Generate an AI-powered draft reply for an email via MCP sampling.
+
+        Produces professional AR reply text based on the email content and optional
+        classification context. Does NOT create an Outlook draft — use ``create_draft``
+        to persist the generated text. Requires MCP sampling support on the client.
+        """
+        return await email_drafter.draft_reply(message_id, ctx, classification_context=classification_context)
+
+    @mcp.tool()
     async def send_email(
         ctx: Context,
         subject: str,
@@ -168,6 +200,36 @@ def build_mcp() -> FastMCP:
             to_addresses=to_addresses,
             content_type=content_type,
         )
+
+    @mcp.tool()
+    async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> str:
+        """Mark a message as read or unread (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite)."""
+        return await email_writer.mark_as_read(ctx, message_id, is_read=is_read)
+
+    @mcp.tool()
+    async def move_email(ctx: Context, message_id: str, destination_folder_id: str) -> str:
+        """Move a message to a different mail folder (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite).
+
+        Use ``list_folders`` to discover folder IDs.
+        """
+        return await email_writer.move_email(ctx, message_id, destination_folder_id)
+
+    @mcp.tool()
+    async def create_reply_draft(ctx: Context, message_id: str, comment: str | None = None) -> str:
+        """Create a reply draft for a message, pre-populated with sender, subject (RE:), and quoted body.
+
+        Optionally include ``comment`` to pre-fill the reply body text.
+        Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
+        """
+        return await email_writer.create_reply_draft(ctx, message_id, comment=comment)
+
+    @mcp.tool()
+    async def list_folders(ctx: Context, top: int = 100) -> str:
+        """List mail folders for the signed-in user (id, displayName, item counts).
+
+        Useful for discovering folder IDs for ``move_email``.
+        """
+        return await email_reader.list_folders(ctx, top=top)
 
     return mcp
 
