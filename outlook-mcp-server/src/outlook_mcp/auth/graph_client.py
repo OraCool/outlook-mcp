@@ -16,14 +16,31 @@ def _encode_message_id_for_path(message_id: str) -> str:
 
 
 class GraphMailClient:
-    """Thin Graph REST wrapper using httpx (supports ``$search`` + ConsistencyLevel header)."""
+    """Thin Graph REST wrapper using httpx (supports ``$search`` + ConsistencyLevel header).
 
-    def __init__(self, access_token: str, *, http_timeout: float = 30.0) -> None:
+    ``mailbox`` unset → delegated ``/me/...``. When set (UPN or user id), paths use
+    ``/users/{mailbox}/...`` (application permissions).
+    """
+
+    def __init__(
+        self,
+        access_token: str,
+        *,
+        http_timeout: float = 30.0,
+        mailbox: str | None = None,
+    ) -> None:
         self._headers = {
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         }
         self._http_timeout = http_timeout
+        self._mailbox = (mailbox or "").strip() or None
+
+    def _user_prefix(self) -> str:
+        if not self._mailbox:
+            return "/me"
+        enc = quote(self._mailbox, safe="")
+        return f"/users/{enc}"
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=GRAPH_BASE, headers=self._headers, timeout=self._http_timeout)
@@ -33,8 +50,9 @@ class GraphMailClient:
         if select:
             params["$select"] = select
         enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.get(f"/me/messages/{enc}", params=params or None)
+            r = await c.get(f"{base}/messages/{enc}", params=params or None)
             r.raise_for_status()
             return r.json()
 
@@ -55,8 +73,9 @@ class GraphMailClient:
         }
         if select:
             params["$select"] = select
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.get("/me/messages", params=params)
+            r = await c.get(f"{base}/messages", params=params)
             r.raise_for_status()
             body = r.json()
         values = list(body.get("value") or [])
@@ -71,9 +90,10 @@ class GraphMailClient:
         params: dict[str, str] = {"$search": f'"{safe_query}"', "$top": str(top)}
         if select:
             params["$select"] = select
+        base = self._user_prefix()
         async with self._client() as c:
             r = await c.get(
-                "/me/messages",
+                f"{base}/messages",
                 params=params,
                 headers={**self._headers, "ConsistencyLevel": "eventual"},
             )
@@ -90,15 +110,17 @@ class GraphMailClient:
         }
         if select:
             params["$select"] = select
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.get("/me/mailFolders/Inbox/messages", params=params)
+            r = await c.get(f"{base}/mailFolders/Inbox/messages", params=params)
             r.raise_for_status()
             return r.json()
 
     async def list_attachments(self, message_id: str) -> dict[str, Any]:
         enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.get(f"/me/messages/{enc}/attachments")
+            r = await c.get(f"{base}/messages/{enc}/attachments")
             r.raise_for_status()
             return r.json()
 
@@ -107,26 +129,30 @@ class GraphMailClient:
 
         ``top`` is Graph ``$top`` (max rows). Use a large value if you need the full list.
         """
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.get("/me/outlook/masterCategories", params={"$top": str(top)})
+            r = await c.get(f"{base}/outlook/masterCategories", params={"$top": str(top)})
             r.raise_for_status()
             return r.json()
 
     async def send_mail(self, payload: dict[str, Any]) -> None:
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.post("/me/sendMail", json=payload)
+            r = await c.post(f"{base}/sendMail", json=payload)
             r.raise_for_status()
 
     async def create_message_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.post("/me/messages", json=payload)
+            r = await c.post(f"{base}/messages", json=payload)
             r.raise_for_status()
             return r.json()
 
     async def update_message(self, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.patch(f"/me/messages/{enc}", json=payload)
+            r = await c.patch(f"{base}/messages/{enc}", json=payload)
             r.raise_for_status()
             if r.content:
                 return r.json()
@@ -135,8 +161,9 @@ class GraphMailClient:
     async def move_message(self, message_id: str, destination_id: str) -> dict[str, Any]:
         """Move a message to a different folder. Returns the moved message."""
         enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.post(f"/me/messages/{enc}/move", json={"destinationId": destination_id})
+            r = await c.post(f"{base}/messages/{enc}/move", json={"destinationId": destination_id})
             r.raise_for_status()
             return r.json()
 
@@ -146,17 +173,19 @@ class GraphMailClient:
         Returns the created draft message.
         """
         enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
         async with self._client() as c:
             if comment:
-                r = await c.post(f"/me/messages/{enc}/createReply", json={"comment": comment})
+                r = await c.post(f"{base}/messages/{enc}/createReply", json={"comment": comment})
             else:
-                r = await c.post(f"/me/messages/{enc}/createReply")
+                r = await c.post(f"{base}/messages/{enc}/createReply")
             r.raise_for_status()
             return r.json()
 
     async def list_folders(self, top: int = 100) -> dict[str, Any]:
         """List mail folders for the signed-in user."""
+        base = self._user_prefix()
         async with self._client() as c:
-            r = await c.get("/me/mailFolders", params={"$top": str(top)})
+            r = await c.get(f"{base}/mailFolders", params={"$top": str(top)})
             r.raise_for_status()
             return r.json()

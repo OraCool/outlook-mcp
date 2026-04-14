@@ -78,6 +78,39 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GRAPH_OAUTH_TOKEN_CACHE_PATH", "graph_oauth_token_cache_path"),
     )
 
+    # application: client_credentials + /users/... vs delegated: /me
+    graph_auth_mode: str = Field(
+        default="delegated",
+        validation_alias=AliasChoices("GRAPH_AUTH_MODE", "graph_auth_mode"),
+        description="delegated (default) uses /me; application uses /users/{mailbox} with app-only tokens.",
+    )
+    graph_tenant_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("GRAPH_TENANT_ID", "graph_tenant_id"),
+        description="Tenant for client_credentials; if empty, GRAPH_OAUTH_TENANT is used.",
+    )
+    graph_application_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("GRAPH_APPLICATION_CLIENT_ID", "graph_application_client_id"),
+    )
+    graph_application_client_secret: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GRAPH_APPLICATION_CLIENT_SECRET", "graph_application_client_secret"),
+    )
+    graph_application_mailbox: str = Field(
+        default="",
+        validation_alias=AliasChoices("GRAPH_APPLICATION_MAILBOX", "graph_application_mailbox"),
+        description="Default mailbox UPN or object id for application mode when X-Graph-Mailbox is absent.",
+    )
+    graph_allow_client_secret_header: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "GRAPH_ALLOW_CLIENT_SECRET_HEADER",
+            "graph_allow_client_secret_header",
+        ),
+        description="If true, X-Graph-Client-Secret may override client secret (dev only).",
+    )
+
     pii_redaction_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("PII_REDACTION_ENABLED", "pii_redaction_enabled"),
@@ -116,6 +149,14 @@ class Settings(BaseSettings):
             "UNCLASSIFIED is always included."
         ),
     )
+
+    @field_validator("graph_auth_mode")
+    @classmethod
+    def _normalize_graph_auth_mode(cls, v: str) -> str:
+        s = (v or "delegated").lower().strip()
+        if s not in ("delegated", "application"):
+            return "delegated"
+        return s
 
     @field_validator("pii_redaction_strategy")
     @classmethod

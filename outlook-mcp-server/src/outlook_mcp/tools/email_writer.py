@@ -1,4 +1,8 @@
-"""Optional write operations (feature-flagged; ADR-005 prefers Graph API Bridge for send)."""
+"""Optional write operations (feature-flagged via ENABLE_WRITE_OPERATIONS).
+
+Many deployments send outbound mail from a dedicated service; keep writes disabled
+unless this process should call Graph send/category APIs directly.
+"""
 
 from __future__ import annotations
 
@@ -91,7 +95,7 @@ async def send_email(
         return json.dumps(
             {
                 "error": "write_disabled",
-                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable send_email (see ADR-005/006).",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable send_email.",
             }
         )
 

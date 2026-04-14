@@ -18,6 +18,13 @@ from outlook_mcp.tools._common import graph_message_to_model
 from outlook_mcp.tools.email_reader import _LIST_SELECT, list_folders, list_inbox, list_master_categories
 
 
+def test_graph_mail_client_user_prefix_me_and_mailbox() -> None:
+    me = GraphMailClient("t")
+    assert me._user_prefix() == "/me"
+    mb = GraphMailClient("t", mailbox="a@b.com")
+    assert mb._user_prefix() == f"/users/{quote('a@b.com', safe='')}"
+
+
 def test_graph_message_to_model_minimal() -> None:
     raw = {
         "id": "msg-1",

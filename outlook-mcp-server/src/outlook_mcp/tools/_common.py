@@ -12,12 +12,17 @@ from mcp.types import CreateMessageResultWithTools, TextContent
 
 from outlook_mcp.auth.graph_client import GraphMailClient
 from outlook_mcp.auth.token_handler import (
+    GraphMailboxMissingError,
     GraphTokenExpiredError,
     GraphTokenMissingError,
-    resolve_delegated_graph_access_token,
+    resolve_graph_access_token,
 )
 from outlook_mcp.models.email import EmailAddress, EmailMessage
-from outlook_mcp.models.errors import MISSING_TOKEN_PAYLOAD, TOKEN_EXPIRED_PAYLOAD
+from outlook_mcp.models.errors import (
+    MISSING_MAILBOX_PAYLOAD,
+    MISSING_TOKEN_PAYLOAD,
+    TOKEN_EXPIRED_PAYLOAD,
+)
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -60,12 +65,12 @@ def graph_message_to_model(raw: dict[str, Any]) -> EmailMessage:
 
 
 def make_graph_client(ctx: Context | None) -> GraphMailClient:
-    """Build a Graph client using the delegated token from ``ctx`` (or env fallbacks)."""
+    """Build a Graph client using token + mailbox context from ``ctx`` (or env fallbacks)."""
     from outlook_mcp.config import get_settings
 
-    token, _ = resolve_delegated_graph_access_token(ctx)
+    token, _exp, mailbox = resolve_graph_access_token(ctx)
     timeout = float(get_settings().graph_http_timeout_seconds)
-    return GraphMailClient(token, http_timeout=timeout)
+    return GraphMailClient(token, http_timeout=timeout, mailbox=mailbox)
 
 
 _EMAIL_LIKE_RE = re.compile(
@@ -144,6 +149,8 @@ def tool_error_token(e: Exception) -> dict[str, Any]:
         return dict(TOKEN_EXPIRED_PAYLOAD)
     if isinstance(e, GraphTokenMissingError):
         return dict(MISSING_TOKEN_PAYLOAD)
+    if isinstance(e, GraphMailboxMissingError):
+        return dict(MISSING_MAILBOX_PAYLOAD)
     return {"error": "graph_error", "message": sanitize_client_error_message(str(e))}
 
 

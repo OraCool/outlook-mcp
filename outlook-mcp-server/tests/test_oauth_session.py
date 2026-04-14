@@ -93,6 +93,13 @@ def test_x_graph_token_precedence_over_oauth_session(monkeypatch: pytest.MonkeyP
         graph_oauth_client_id = "cid"
         graph_oauth_token_cache_path = None
         graph_dev_token = None
+        graph_auth_mode = "delegated"
+        graph_tenant_id = ""
+        graph_application_client_id = ""
+        graph_application_client_secret = None
+        graph_application_mailbox = ""
+        graph_allow_client_secret_header = False
+        graph_oauth_tenant = "common"
 
     monkeypatch.setattr("outlook_mcp.config.get_settings", lambda: _S())
 

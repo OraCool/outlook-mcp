@@ -104,7 +104,7 @@ class ExtractedData(BaseModel):
 class ClassificationResult(BaseModel):
     """AR taxonomy classification for one message (MCP sampling output).
 
-    Supports hierarchical taxonomy per ADR-008: primary ``category`` +
+    Supports hierarchical taxonomy: primary ``category`` +
     optional ``sub_category`` + multi-label ``categories`` list.
     """
 

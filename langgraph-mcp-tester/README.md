@@ -38,7 +38,7 @@ For **delegated Graph** access over HTTP, set `X_GRAPH_TOKEN` in `.env` to the r
 The value must be a **Microsoft Graph access token for a signed-in user** (delegated permissions), not your OpenAI or Anthropic API key.
 
 **Do you put a Microsoft client ID in this app’s `.env`?**  
-Usually **no**. `langgraph-mcp-tester` only forwards the token string to the MCP server. The **Application (client) ID** belongs to the Entra ID **app registration** that performs the OAuth sign-in and token request (your product, a small test script, Postman, etc.). You configure client ID, tenant, redirect URI, and scopes there; after the user signs in, you copy the resulting **access token** into `X_GRAPH_TOKEN` (or your gateway injects it as `X-Graph-Token` per ADR-006).
+Usually **no**. `langgraph-mcp-tester` only forwards the token string to the MCP server. The **Application (client) ID** belongs to the Entra ID **app registration** that performs the OAuth sign-in and token request (your product, a small test script, Postman, etc.). You configure client ID, tenant, redirect URI, and scopes there; after the user signs in, you copy the resulting **access token** into `X_GRAPH_TOKEN` (or your gateway injects it as the `X-Graph-Token` HTTP header on MCP requests).
 
 #### Ways to obtain a token for local testing
 

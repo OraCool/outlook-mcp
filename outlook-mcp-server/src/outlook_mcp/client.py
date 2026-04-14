@@ -151,6 +151,9 @@ def _graph_headers(s: Settings) -> dict[str, str]:
         if tok.lower().startswith(_BEARER):
             tok = tok[7:].strip()
         headers["X-Graph-Token"] = tok
+    mb = (s.graph_application_mailbox or "").strip()
+    if mb:
+        headers["X-Graph-Mailbox"] = mb
     return headers
 
 
