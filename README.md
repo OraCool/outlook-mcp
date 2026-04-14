@@ -24,7 +24,7 @@ uvx outlook-multi-tenant-mcp
 Pin a version:
 
 ```bash
-uvx outlook-multi-tenant-mcp==0.1.0
+uvx outlook-multi-tenant-mcp==0.3.0
 ```
 
 The same install also provides the **`outlook-mcp-server`** CLI for backwards compatibility.

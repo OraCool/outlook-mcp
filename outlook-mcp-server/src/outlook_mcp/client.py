@@ -30,7 +30,7 @@ from outlook_mcp.config import Settings, get_settings
 if TYPE_CHECKING:
     from mcp.shared.context import RequestContext
 
-_DEV_CLIENT_INFO = Implementation(name="outlook-mcp-dev-client", version="0.1.0")
+_DEV_CLIENT_INFO = Implementation(name="outlook-mcp-dev-client", version="0.3.0")
 _BEARER = "bearer "
 
 

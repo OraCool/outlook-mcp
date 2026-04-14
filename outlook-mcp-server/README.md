@@ -51,7 +51,7 @@ uvx outlook-multi-tenant-mcp
 Pin a release:
 
 ```bash
-uvx outlook-multi-tenant-mcp==0.1.0
+uvx outlook-multi-tenant-mcp==0.3.0
 ```
 
 The same wheel also installs the **`outlook-mcp-server`** command (same entry point) for older docs and scripts.
@@ -247,7 +247,7 @@ Tools **`categorize_email`**, **`extract_email_data`**, and **`apply_llm_categor
 IDE and agent integrations change between versions—use each product’s current docs for file paths and JSON/TOML schema. The stable pattern for **stdio + PyPI** is:
 
 - **command:** `uvx`
-- **args:** `["outlook-multi-tenant-mcp"]` (optional version pin: `["outlook-multi-tenant-mcp==0.1.0"]`)
+- **args:** `["outlook-multi-tenant-mcp"]` (optional version pin: `["outlook-multi-tenant-mcp==0.3.0"]`)
 - **env:** Graph-related variables from [`.env.example`](.env.example) (e.g. `GRAPH_DEV_TOKEN`, `MCP_TRANSPORT`, `ENABLE_WRITE_OPERATIONS`). **Never commit real tokens**; use env injection or secret stores.
 
 From a **git checkout** instead of PyPI, use **command** `uv` and **args** like `["run", "outlook-mcp-server"]` with **working directory** set to `outlook-mcp-server` (if the client supports `cwd`). Alternatively `["run", "outlook-multi-tenant-mcp"]` after `uv sync` in that directory.
