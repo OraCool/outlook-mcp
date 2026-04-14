@@ -53,7 +53,15 @@ def build_mcp() -> FastMCP:
         return await email_reader.get_thread(conversation_id, ctx, top=top)
 
     @mcp.tool()
-    async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
+    async def search_emails(
+        query: str,
+        ctx: Context,
+        top: int = 25,
+        read_filter: str = "any",
+        received_on: str | None = None,
+        received_after: str | None = None,
+        received_before: str | None = None,
+    ) -> str:
         """Search the signed-in user's mailbox using KQL (Keyword Query Language).
 
         Microsoft Graph applies the query via ``$search`` on ``/me/messages`` with
@@ -62,26 +70,71 @@ def build_mcp() -> FastMCP:
         Results omit the full message body by default; use ``get_email`` for body text.
         Each hit includes ``bodyPreview`` and metadata.
 
+        ``read_filter``: ``any`` (default), ``read``, or ``unread``.
+
+        Date filters (UTC, YYYY-MM-DD for KQL): ``received_on`` (single day), or
+        ``received_after`` / ``received_before`` (range or open-ended). Do not combine
+        ``received_on`` with ``received_after`` / ``received_before``.
+
         Examples (combine with AND / OR where supported):
         - ``from:alice@contoso.com``
         - ``subject:invoice``
-        - ``received:2024-01-01..2024-12-31``
         - ``hasattachment:yes``
         - ``from:bob@contoso.com AND subject:payment``
 
         Full syntax and limitations:
         https://learn.microsoft.com/en-us/graph/search-query-parameter
         """
-        return await email_reader.search_emails(query, ctx, top=top)
+        return await email_reader.search_emails(
+            query,
+            ctx,
+            top=top,
+            read_filter=read_filter,
+            received_on=received_on,
+            received_after=received_after,
+            received_before=received_before,
+        )
 
     @mcp.tool()
-    async def list_inbox(ctx: Context, top: int = 25, skip: int = 0) -> str:
-        """List recent Inbox messages.
+    async def list_inbox(
+        ctx: Context,
+        top: int = 25,
+        skip: int = 0,
+        unread_only: bool = False,
+        received_on: str | None = None,
+        received_after: str | None = None,
+        received_before: str | None = None,
+        folder_id: str | None = None,
+        folder_name: str | None = None,
+    ) -> str:
+        """List messages in a mail folder (default: Inbox).
 
         Omits the full message body by default; use ``get_email`` for body text.
         Each item includes ``bodyPreview`` and metadata.
+        When ``unread_only`` is true, only messages with ``isRead`` false are returned.
+
+        ``folder_id``: Graph folder id from ``list_folders``, or a well-known name (e.g.
+        ``inbox``, ``sentitems``, ``drafts``, ``archive``). Omit for Inbox.
+
+        ``folder_name``: resolve folder by display name (case-insensitive). Do not set
+        together with ``folder_id``. If no match or multiple matches, returns an error.
+
+        ``received_on`` (YYYY-MM-DD): that UTC calendar day only.
+        ``received_after`` / ``received_before``: ISO date or datetime; lower bound
+        inclusive, upper bound exclusive. Do not set ``received_on`` together with
+        ``received_after`` / ``received_before``.
         """
-        return await email_reader.list_inbox(ctx, top=top, skip=skip)
+        return await email_reader.list_inbox(
+            ctx,
+            top=top,
+            skip=skip,
+            unread_only=unread_only,
+            received_on=received_on,
+            received_after=received_after,
+            received_before=received_before,
+            folder_id=folder_id,
+            folder_name=folder_name,
+        )
 
     @mcp.tool()
     async def get_attachments(message_id: str, ctx: Context) -> str:
@@ -215,6 +268,28 @@ def build_mcp() -> FastMCP:
         return await email_writer.move_email(ctx, message_id, destination_folder_id)
 
     @mcp.tool()
+    async def create_mail_folder(
+        ctx: Context,
+        display_name: str,
+        parent_folder_id: str | None = None,
+        parent_folder_name: str | None = None,
+    ) -> str:
+        """Create a mail folder at the mailbox root, or a subfolder under a parent folder.
+
+        Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
+
+        Parent (for a subfolder): ``parent_folder_id`` (Graph id or well-known name), or
+        ``parent_folder_name`` (display name, resolved like ``list_inbox`` ``folder_name``).
+        Do not set both parent fields.
+        """
+        return await email_writer.create_mail_folder(
+            ctx,
+            display_name,
+            parent_folder_id=parent_folder_id,
+            parent_folder_name=parent_folder_name,
+        )
+
+    @mcp.tool()
     async def create_reply_draft(ctx: Context, message_id: str, comment: str | None = None) -> str:
         """Create a reply draft for a message, pre-populated with sender, subject (RE:), and quoted body.
 
@@ -227,7 +302,8 @@ def build_mcp() -> FastMCP:
     async def list_folders(ctx: Context, top: int = 100) -> str:
         """List mail folders for the signed-in user (id, displayName, item counts).
 
-        Useful for discovering folder IDs for ``move_email``.
+        Use folder ``id`` values with ``list_inbox`` (``folder_id``) and ``move_email``,
+        or as ``parent_folder_id`` / ``parent_folder_name`` for ``create_mail_folder``.
         """
         return await email_reader.list_folders(ctx, top=top)
 

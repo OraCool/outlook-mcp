@@ -11,6 +11,7 @@ import pytest
 from outlook_mcp.auth.token_handler import GraphTokenMissingError
 from outlook_mcp.tools.email_writer import (
     create_draft,
+    create_mail_folder,
     create_reply_draft,
     mark_as_read,
     move_email,
@@ -260,3 +261,82 @@ async def test_create_reply_draft_without_comment() -> None:
     data = json.loads(result)
     assert data["ok"] is True
     mock_client.create_reply.assert_awaited_once_with("orig", comment=None)
+
+
+@pytest.mark.asyncio
+async def test_create_mail_folder_write_disabled() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsDisabled()):
+        result = await create_mail_folder(ctx=None, display_name="New")
+    data = json.loads(result)
+    assert data["error"] == "write_disabled"
+
+
+@pytest.mark.asyncio
+async def test_create_mail_folder_success_root() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_mail_folder = AsyncMock(
+        return_value={"id": "fid-1", "displayName": "Projects"},
+    )
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await create_mail_folder(ctx=None, display_name="Projects")
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["folder"]["id"] == "fid-1"
+    mock_client.create_mail_folder.assert_awaited_once_with(
+        "Projects", parent_folder_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_mail_folder_success_subfolder() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_mail_folder = AsyncMock(return_value={"id": "fid-2"})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await create_mail_folder(
+                ctx=None, display_name="Nested", parent_folder_id="parent-id"
+            )
+    data = json.loads(result)
+    assert data["ok"] is True
+    mock_client.create_mail_folder.assert_awaited_once_with(
+        "Nested", parent_folder_id="parent-id"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_mail_folder_success_subfolder_by_parent_name() -> None:
+    mock_client = AsyncMock()
+    mock_client.resolve_mail_folder_id_by_display_name = AsyncMock(return_value="resolved-parent")
+    mock_client.create_mail_folder = AsyncMock(return_value={"id": "fid-3"})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await create_mail_folder(
+                ctx=None,
+                display_name="Nested",
+                parent_folder_name="Projects",
+            )
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["resolved_parent_folder_id"] == "resolved-parent"
+    assert data["parent_folder_name"] == "Projects"
+    mock_client.resolve_mail_folder_id_by_display_name.assert_awaited_once_with("Projects")
+    mock_client.create_mail_folder.assert_awaited_once_with(
+        "Nested", parent_folder_id="resolved-parent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_mail_folder_rejects_parent_id_and_name() -> None:
+    mock_client = AsyncMock()
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await create_mail_folder(
+                ctx=None,
+                display_name="X",
+                parent_folder_id="a",
+                parent_folder_name="B",
+            )
+    data = json.loads(result)
+    assert data["error"] == "invalid_parameters"
+    mock_client.create_mail_folder.assert_not_called()

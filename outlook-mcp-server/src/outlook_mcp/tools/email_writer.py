@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from outlook_mcp.auth.graph_client import MailFolderAmbiguousError, MailFolderNotFoundError
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
 from outlook_mcp.tools._common import make_graph_client, sanitize_client_error_message, tool_error_token
@@ -246,6 +247,102 @@ async def move_email(ctx: Context, message_id: str, destination_folder_id: str) 
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"move_email: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+async def create_mail_folder(
+    ctx: Context,
+    display_name: str,
+    parent_folder_id: str | None = None,
+    parent_folder_name: str | None = None,
+) -> str:
+    """Create a mail folder at the mailbox root, or a subfolder under a parent.
+
+    Parent may be given as ``parent_folder_id`` (Graph id or well-known name) or
+    ``parent_folder_name`` (resolved case-insensitively; same semantics as ``list_inbox``).
+    Do not set both parent fields.
+
+    Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite. Use ``list_folders`` for ids.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable create_mail_folder (requires Mail.ReadWrite).",
+            }
+        )
+
+    if not isinstance(display_name, str) or not display_name.strip():
+        return json.dumps({"error": "validation_error", "message": "display_name must be a non-empty string."})
+
+    if parent_folder_id and parent_folder_name:
+        return json.dumps(
+            {
+                "error": "invalid_parameters",
+                "message": "Specify only one of parent_folder_id or parent_folder_name.",
+            }
+        )
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    effective_parent_id = parent_folder_id
+    if parent_folder_name is not None:
+        pn = parent_folder_name.strip()
+        if not pn:
+            return json.dumps(
+                {
+                    "error": "validation_error",
+                    "message": "parent_folder_name must be non-empty when set.",
+                }
+            )
+        try:
+            effective_parent_id = await client.resolve_mail_folder_id_by_display_name(pn)
+        except MailFolderNotFoundError as e:
+            return json.dumps(
+                {
+                    "error": "folder_not_found",
+                    "message": str(e),
+                    "folder_name": e.display_name,
+                }
+            )
+        except MailFolderAmbiguousError as e:
+            return json.dumps(
+                {
+                    "error": "folder_ambiguous",
+                    "message": str(e),
+                    "folder_name": e.display_name,
+                    "match_count": e.match_count,
+                }
+            )
+
+    await tool_log_info(
+        ctx,
+        f"create_mail_folder: display_name={display_name!r} parent_folder_id={effective_parent_id!r}",
+    )
+    try:
+        created = await client.create_mail_folder(
+            display_name.strip(), parent_folder_id=effective_parent_id
+        )
+        payload: dict[str, object] = {"ok": True, "folder": created}
+        if parent_folder_name is not None:
+            payload["resolved_parent_folder_id"] = effective_parent_id
+            payload["parent_folder_name"] = parent_folder_name.strip()
+        return json.dumps(payload, indent=2)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"create_mail_folder: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"create_mail_folder: network_error {type(e).__name__}")
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 

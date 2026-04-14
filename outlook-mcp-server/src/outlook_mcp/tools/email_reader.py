@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from outlook_mcp.auth.graph_client import MailFolderAmbiguousError, MailFolderNotFoundError
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
 from outlook_mcp.tools._common import (
@@ -17,6 +18,7 @@ from outlook_mcp.tools._common import (
     tool_error_token,
 )
 from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
+from outlook_mcp.tools.mail_query_params import build_inbox_odata_filter, build_search_kql_query
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -106,14 +108,27 @@ async def get_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
         )
 
 
-async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
+async def search_emails(
+    query: str,
+    ctx: Context,
+    top: int = 25,
+    read_filter: str = "any",
+    received_on: str | None = None,
+    received_after: str | None = None,
+    received_before: str | None = None,
+) -> str:
     """Search the signed-in user's mailbox using **KQL** (Keyword Query Language).
 
     Graph uses ``$search`` on messages with ``ConsistencyLevel: eventual``.
 
+    ``read_filter``: ``any`` (default), ``read``, or ``unread`` (adds ``read:yes`` / ``read:no``).
+
+    Date filters (UTC): ``received_on`` (YYYY-MM-DD, that calendar day), or
+    ``received_after`` / ``received_before`` (YYYY-MM-DD for KQL day granularity).
+    Do not combine ``received_on`` with ``received_after`` / ``received_before``.
+
     Example queries: ``from:user@contoso.com``, ``subject:invoice``,
-    ``received:2024-01-01..2024-12-31``, ``hasattachment:yes``,
-    ``from:a@x.com AND subject:payment``. See
+    ``hasattachment:yes``, ``from:a@x.com AND subject:payment``. See
     https://learn.microsoft.com/en-us/graph/search-query-parameter
     """
     qprev = _preview(query, max_len=24)
@@ -121,11 +136,24 @@ async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
         client = make_graph_client(ctx)
     except (GraphTokenExpiredError, GraphTokenMissingError) as e:
         return json.dumps(tool_error_token(e))
-    await tool_log_info(ctx, f"search_emails: start query={qprev!r} top={top}")
+    try:
+        effective_query = build_search_kql_query(
+            query,
+            read_filter=read_filter,
+            received_on=received_on,
+            received_after=received_after,
+            received_before=received_before,
+        )
+    except ValueError as e:
+        return json.dumps({"error": "invalid_parameters", "message": str(e)})
+    await tool_log_info(
+        ctx,
+        f"search_emails: start query={qprev!r} top={top} read_filter={read_filter!r}",
+    )
     await tool_report_progress(ctx, 10, 100, message="search_emails: start")
     try:
         await tool_report_progress(ctx, 40, 100, message="search_emails: calling Graph")
-        data = await client.search_messages(query, top=top, select=_LIST_SELECT)
+        data = await client.search_messages(effective_query, top=top, select=_LIST_SELECT)
         await tool_report_progress(ctx, 80, 100, message="search_emails: mapping results")
         items = data.get("value") or []
         settings = get_settings()
@@ -134,7 +162,15 @@ async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
             for m in items
         ]
         await tool_report_progress(ctx, 100, 100, message="search_emails: complete")
-        return json.dumps({"query": query, "messages": models, "count": len(models)})
+        return json.dumps(
+            {
+                "query": query,
+                "effective_query": effective_query,
+                "read_filter": read_filter,
+                "messages": models,
+                "count": len(models),
+            }
+        )
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"search_emails: http_error status={e.response.status_code}")
         return json.dumps(
@@ -151,17 +187,101 @@ async def search_emails(query: str, ctx: Context, top: int = 25) -> str:
         )
 
 
-async def list_inbox(ctx: Context, top: int = 25, skip: int = 0) -> str:
-    """List recent Inbox messages (newest first)."""
+async def list_inbox(
+    ctx: Context,
+    top: int = 25,
+    skip: int = 0,
+    unread_only: bool = False,
+    received_on: str | None = None,
+    received_after: str | None = None,
+    received_before: str | None = None,
+    folder_id: str | None = None,
+    folder_name: str | None = None,
+) -> str:
+    """List messages in a mail folder (newest first). Default folder is Inbox (well-known ``inbox``).
+
+    When ``folder_id`` is set, list that folder (id from ``list_folders``, or well-known
+    name such as ``sentitems``, ``drafts``, ``archive``).
+
+    When ``folder_name`` is set (and ``folder_id`` is not), resolve the folder by
+    case-insensitive ``displayName`` via Graph (folder tree walk). If none or multiple
+    folders match, returns ``folder_not_found`` or ``folder_ambiguous`` errors.
+
+    When ``unread_only`` is true, only ``isRead`` false.
+
+    ``received_on`` (YYYY-MM-DD): messages received during that UTC calendar day.
+
+    ``received_after`` / ``received_before``: ISO date (``YYYY-MM-DD``) or datetime;
+    inclusive lower bound ``receivedDateTime ge``; exclusive upper ``receivedDateTime lt``
+    (messages strictly before that instant). Do not set ``received_on`` together with
+    ``received_after`` / ``received_before``.
+    """
     try:
         client = make_graph_client(ctx)
     except (GraphTokenExpiredError, GraphTokenMissingError) as e:
         return json.dumps(tool_error_token(e))
-    await tool_log_info(ctx, f"list_inbox: start top={top} skip={skip}")
+    if folder_id and folder_name:
+        return json.dumps(
+            {
+                "error": "invalid_parameters",
+                "message": "Specify only one of folder_id or folder_name.",
+            }
+        )
+
+    try:
+        inbox_filter = build_inbox_odata_filter(
+            unread_only,
+            received_on,
+            received_after,
+            received_before,
+        )
+    except ValueError as e:
+        return json.dumps({"error": "invalid_parameters", "message": str(e)})
+
     await tool_report_progress(ctx, 10, 100, message="list_inbox: start")
+
+    effective_folder_id = folder_id
+    if folder_name is not None:
+        fn = folder_name.strip()
+        if not fn:
+            return json.dumps(
+                {"error": "invalid_parameters", "message": "folder_name must be non-empty when set."}
+            )
+        try:
+            await tool_report_progress(ctx, 25, 100, message="list_inbox: resolving folder_name")
+            effective_folder_id = await client.resolve_mail_folder_id_by_display_name(fn)
+        except MailFolderNotFoundError as e:
+            return json.dumps(
+                {
+                    "error": "folder_not_found",
+                    "message": str(e),
+                    "folder_name": e.display_name,
+                }
+            )
+        except MailFolderAmbiguousError as e:
+            return json.dumps(
+                {
+                    "error": "folder_ambiguous",
+                    "message": str(e),
+                    "folder_name": e.display_name,
+                    "match_count": e.match_count,
+                }
+            )
+
+    await tool_log_info(
+        ctx,
+        f"list_inbox: start top={top} skip={skip} unread_only={unread_only} "
+        f"folder_id={folder_id!r} folder_name={folder_name!r} effective_folder_id={effective_folder_id!r}",
+    )
     try:
         await tool_report_progress(ctx, 40, 100, message="list_inbox: calling Graph")
-        data = await client.list_inbox(top=top, skip=skip, select=_LIST_SELECT)
+        data = await client.list_inbox(
+            top=top,
+            skip=skip,
+            select=_LIST_SELECT,
+            inbox_filter=inbox_filter,
+            folder_id=effective_folder_id,
+        )
         await tool_report_progress(ctx, 80, 100, message="list_inbox: mapping messages")
         items = data.get("value") or []
         settings = get_settings()
@@ -170,7 +290,22 @@ async def list_inbox(ctx: Context, top: int = 25, skip: int = 0) -> str:
             for m in items
         ]
         await tool_report_progress(ctx, 100, 100, message="list_inbox: complete")
-        return json.dumps({"messages": models, "count": len(models), "top": top, "skip": skip})
+        out: dict[str, object] = {
+            "messages": models,
+            "count": len(models),
+            "top": top,
+            "skip": skip,
+            "unread_only": unread_only,
+            "folder_id": effective_folder_id,
+            "folder_name": folder_name.strip() if folder_name else None,
+            "resolved_from_name": bool(folder_name),
+            "received_on": received_on,
+            "received_after": received_after,
+            "received_before": received_before,
+        }
+        if inbox_filter:
+            out["inbox_filter"] = inbox_filter
+        return json.dumps(out)
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"list_inbox: http_error status={e.response.status_code}")
         return json.dumps(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 from urllib.parse import quote
 
@@ -10,9 +11,33 @@ import httpx
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
+class MailFolderNotFoundError(Exception):
+    """No mail folder matched the given display name (case-insensitive)."""
+
+    def __init__(self, display_name: str) -> None:
+        self.display_name = display_name
+        super().__init__(f"No folder named {display_name!r}")
+
+
+class MailFolderAmbiguousError(Exception):
+    """More than one mail folder matched the display name."""
+
+    def __init__(self, display_name: str, match_count: int) -> None:
+        self.display_name = display_name
+        self.match_count = match_count
+        super().__init__(
+            f"Multiple folders ({match_count}) named {display_name!r}; use folder_id from list_folders."
+        )
+
+
 def _encode_message_id_for_path(message_id: str) -> str:
     """Percent-encode a Graph ``message`` id for use in a URL path (``+``, ``/``, ``=``, etc.)."""
     return quote(message_id.strip(), safe="")
+
+
+def _encode_mail_folder_id_for_path(folder_id: str) -> str:
+    """Percent-encode a mail folder id or well-known name for use in a URL path segment."""
+    return quote(folder_id.strip(), safe="")
 
 
 class GraphMailClient:
@@ -101,20 +126,80 @@ class GraphMailClient:
             return r.json()
 
     async def list_inbox(
-        self, top: int = 25, skip: int = 0, *, select: str | None = None
+        self,
+        top: int = 25,
+        skip: int = 0,
+        *,
+        select: str | None = None,
+        inbox_filter: str | None = None,
+        folder_id: str | None = None,
     ) -> dict[str, Any]:
+        """List messages in a mail folder, newest first (default folder: well-known ``inbox``).
+
+        ``folder_id`` is a Graph mail folder id from ``list_folders``, or a well-known name
+        such as ``inbox``, ``sentitems``, ``drafts``, ``archive`` (case-insensitive in practice).
+
+        ``inbox_filter`` is the full OData ``$filter`` string (e.g. ``isRead eq false``,
+        ``receivedDateTime`` bounds). If Graph returns 400 ``InefficientFilter`` for
+        ``$filter`` combined with ``$orderby``, retries without ``$orderby``, sorts by
+        ``receivedDateTime`` descending in memory, then applies ``skip`` / ``top``.
+        """
+        folder_segment = _encode_mail_folder_id_for_path(folder_id) if folder_id else "inbox"
         params: dict[str, str] = {
             "$top": str(top),
             "$skip": str(skip),
             "$orderby": "receivedDateTime desc",
         }
+        if inbox_filter:
+            params["$filter"] = inbox_filter
         if select:
             params["$select"] = select
         base = self._user_prefix()
+        messages_path = f"{base}/mailFolders/{folder_segment}/messages"
         async with self._client() as c:
-            r = await c.get(f"{base}/mailFolders/Inbox/messages", params=params)
+            r = await c.get(messages_path, params=params)
+            if r.status_code == 400 and inbox_filter:
+                err = (r.text or "").lower()
+                if "inefficientfilter" in err or "inefficient filter" in err:
+                    return await self._list_inbox_filter_fallback(
+                        c,
+                        messages_path,
+                        inbox_filter=inbox_filter,
+                        top=top,
+                        skip=skip,
+                        select=select,
+                    )
             r.raise_for_status()
             return r.json()
+
+    async def _list_inbox_filter_fallback(
+        self,
+        c: httpx.AsyncClient,
+        messages_path: str,
+        *,
+        inbox_filter: str,
+        top: int,
+        skip: int,
+        select: str | None,
+    ) -> dict[str, Any]:
+        """Folder message list without ``$orderby`` when Graph rejects filter+orderby (sort locally)."""
+        need = min(skip + top, 999)
+        params: dict[str, str] = {
+            "$filter": inbox_filter,
+            "$top": str(need),
+        }
+        if select:
+            params["$select"] = select
+        r = await c.get(messages_path, params=params)
+        r.raise_for_status()
+        body = r.json()
+        values = list(body.get("value") or [])
+        values.sort(
+            key=lambda m: (m.get("receivedDateTime") or ""),
+            reverse=True,
+        )
+        body["value"] = values[skip : skip + top]
+        return body
 
     async def list_attachments(self, message_id: str) -> dict[str, Any]:
         enc = _encode_message_id_for_path(message_id)
@@ -187,5 +272,84 @@ class GraphMailClient:
         base = self._user_prefix()
         async with self._client() as c:
             r = await c.get(f"{base}/mailFolders", params={"$top": str(top)})
+            r.raise_for_status()
+            return r.json()
+
+    async def resolve_mail_folder_id_by_display_name(
+        self,
+        display_name: str,
+        *,
+        max_folder_requests: int = 400,
+    ) -> str:
+        """Return the Graph ``id`` for a unique folder whose ``displayName`` matches (case-insensitive).
+
+        Walks the folder tree (root ``mailFolders``, then ``childFolders`` BFS). If no match,
+        raises ``MailFolderNotFoundError``. If more than one match, raises ``MailFolderAmbiguousError``.
+        """
+        needle = (display_name or "").strip()
+        if not needle:
+            raise ValueError("folder_name must be a non-empty string")
+        needle_cf = needle.casefold()
+
+        matches: set[str] = set()
+
+        def consider(folder: dict[str, Any]) -> None:
+            dn = (folder.get("displayName") or "").strip()
+            if dn.casefold() != needle_cf:
+                return
+            fid = folder.get("id")
+            if isinstance(fid, str) and fid:
+                matches.add(fid)
+            if len(matches) > 1:
+                raise MailFolderAmbiguousError(needle, len(matches))
+
+        base = self._user_prefix()
+        requests_made = 0
+
+        async with self._client() as c:
+            queue: deque[str] = deque()
+
+            r = await c.get(f"{base}/mailFolders", params={"$top": "999"})
+            requests_made += 1
+            r.raise_for_status()
+            for folder in r.json().get("value") or []:
+                consider(folder)
+                fid = folder.get("id")
+                if isinstance(fid, str) and fid:
+                    queue.append(fid)
+
+            while queue and requests_made < max_folder_requests:
+                parent_id = queue.popleft()
+                enc = _encode_mail_folder_id_for_path(parent_id)
+                r2 = await c.get(
+                    f"{base}/mailFolders/{enc}/childFolders",
+                    params={"$top": "999"},
+                )
+                requests_made += 1
+                r2.raise_for_status()
+                for folder in r2.json().get("value") or []:
+                    consider(folder)
+                    cid = folder.get("id")
+                    if isinstance(cid, str) and cid:
+                        queue.append(cid)
+
+        if len(matches) > 1:
+            raise MailFolderAmbiguousError(needle, len(matches))
+        if len(matches) == 0:
+            raise MailFolderNotFoundError(needle)
+        return next(iter(matches))
+
+    async def create_mail_folder(
+        self, display_name: str, *, parent_folder_id: str | None = None
+    ) -> dict[str, Any]:
+        """Create a top-level mail folder, or a subfolder under ``parent_folder_id``."""
+        base = self._user_prefix()
+        payload = {"displayName": display_name.strip()}
+        async with self._client() as c:
+            if parent_folder_id:
+                enc = _encode_mail_folder_id_for_path(parent_folder_id)
+                r = await c.post(f"{base}/mailFolders/{enc}/childFolders", json=payload)
+            else:
+                r = await c.post(f"{base}/mailFolders", json=payload)
             r.raise_for_status()
             return r.json()

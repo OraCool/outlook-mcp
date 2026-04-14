@@ -12,10 +12,20 @@ import pytest
 
 from urllib.parse import quote
 
-from outlook_mcp.auth.graph_client import GraphMailClient
+from outlook_mcp.auth.graph_client import (
+    GraphMailClient,
+    MailFolderAmbiguousError,
+    MailFolderNotFoundError,
+)
 from outlook_mcp.auth.token_handler import GraphTokenMissingError
 from outlook_mcp.tools._common import graph_message_to_model
-from outlook_mcp.tools.email_reader import _LIST_SELECT, list_folders, list_inbox, list_master_categories
+from outlook_mcp.tools.email_reader import (
+    _LIST_SELECT,
+    list_folders,
+    list_inbox,
+    list_master_categories,
+    search_emails,
+)
 
 
 def test_graph_mail_client_user_prefix_me_and_mailbox() -> None:
@@ -150,7 +160,7 @@ async def test_graph_mail_client_list_inbox_passes_select(mock_async_client_clas
     gc = GraphMailClient("fake-token")
     await gc.list_inbox(top=10, skip=2, select=_LIST_SELECT)
     mock_instance.get.assert_awaited_once_with(
-        "/me/mailFolders/Inbox/messages",
+        "/me/mailFolders/inbox/messages",
         params={
             "$top": "10",
             "$skip": "2",
@@ -158,6 +168,99 @@ async def test_graph_mail_client_list_inbox_passes_select(mock_async_client_clas
             "$select": _LIST_SELECT,
         },
     )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_inbox_unread_only_adds_filter(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(return_value={"value": []})
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    await gc.list_inbox(
+        top=10, skip=2, select=_LIST_SELECT, inbox_filter="isRead eq false"
+    )
+    mock_instance.get.assert_awaited_once_with(
+        "/me/mailFolders/inbox/messages",
+        params={
+            "$top": "10",
+            "$skip": "2",
+            "$orderby": "receivedDateTime desc",
+            "$filter": "isRead eq false",
+            "$select": _LIST_SELECT,
+        },
+    )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_inbox_custom_folder_segment(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"value": []})
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    await gc.list_inbox(top=5, skip=0, select=_LIST_SELECT, folder_id="sentitems")
+    mock_instance.get.assert_awaited_once_with(
+        "/me/mailFolders/sentitems/messages",
+        params={
+            "$top": "5",
+            "$skip": "0",
+            "$orderby": "receivedDateTime desc",
+            "$select": _LIST_SELECT,
+        },
+    )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_inbox_unread_inefficient_filter_fallback(mock_async_client_class: MagicMock) -> None:
+    bad = MagicMock()
+    bad.status_code = 400
+    bad.text = '{"error":{"code":"InefficientFilter"}}'
+
+    good = MagicMock()
+    good.raise_for_status = MagicMock()
+    good.status_code = 200
+    good.json = MagicMock(
+        return_value={
+            "value": [
+                {"id": "older", "receivedDateTime": "2026-01-01T10:00:00Z"},
+                {"id": "newer", "receivedDateTime": "2026-01-02T10:00:00Z"},
+            ],
+        },
+    )
+
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(side_effect=[bad, good])
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    out = await gc.list_inbox(
+        top=1, skip=0, select=_LIST_SELECT, inbox_filter="isRead eq false"
+    )
+
+    assert mock_instance.get.await_count == 2
+    second_call = mock_instance.get.await_args_list[1]
+    assert second_call[0][0] == "/me/mailFolders/inbox/messages"
+    assert second_call[1]["params"]["$filter"] == "isRead eq false"
+    assert "$orderby" not in second_call[1]["params"]
+    assert second_call[1]["params"]["$top"] == "1"
+    assert out["value"] == [{"id": "newer", "receivedDateTime": "2026-01-02T10:00:00Z"}]
 
 
 @pytest.mark.asyncio
@@ -322,6 +425,50 @@ async def test_list_inbox_missing_token_returns_despite_slow_mcp_notify() -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_search_emails_combined_kql_and_effective_query() -> None:
+    ctx = MagicMock()
+    mock_client = MagicMock()
+    mock_client.search_messages = AsyncMock(return_value={"value": []})
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        result = await search_emails(
+            "subject:pay",
+            ctx,
+            top=5,
+            read_filter="unread",
+            received_after="2024-02-01",
+        )
+    mock_client.search_messages.assert_awaited_once()
+    kql = mock_client.search_messages.call_args[0][0]
+    assert "subject:pay" in kql
+    assert "read:no" in kql
+    assert "received:2024-02-01..2099-12-31" in kql
+    data = json.loads(result)
+    assert data["effective_query"] == kql
+    assert data["read_filter"] == "unread"
+
+
+@pytest.mark.asyncio
+async def test_list_inbox_passes_unread_only_and_echoes_in_json() -> None:
+    ctx = MagicMock()
+    mock_client = MagicMock()
+    mock_client.list_inbox = AsyncMock(return_value={"value": []})
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        result = await list_inbox(ctx, top=10, skip=3, unread_only=True)
+    mock_client.list_inbox.assert_awaited_once_with(
+        top=10,
+        skip=3,
+        select=_LIST_SELECT,
+        inbox_filter="isRead eq false",
+        folder_id=None,
+    )
+    data = json.loads(result)
+    assert data["unread_only"] is True
+    assert data["top"] == 10
+    assert data["skip"] == 3
+
+
+@pytest.mark.asyncio
 @patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
 async def test_graph_mail_client_move_message(mock_async_client_class: MagicMock) -> None:
     mock_response = MagicMock()
@@ -404,6 +551,145 @@ async def test_graph_mail_client_list_folders(mock_async_client_class: MagicMock
     mock_instance.get.assert_awaited_once_with(
         "/me/mailFolders",
         params={"$top": "100"},
+    )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_create_mail_folder_root(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"id": "new-fid", "displayName": "AR Reports"})
+    mock_instance = AsyncMock()
+    mock_instance.post = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    out = await gc.create_mail_folder("AR Reports")
+    assert out["id"] == "new-fid"
+    mock_instance.post.assert_awaited_once_with(
+        "/me/mailFolders",
+        json={"displayName": "AR Reports"},
+    )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_resolve_mail_folder_id_by_display_name_unique(mock_async_client_class: MagicMock) -> None:
+    r1 = MagicMock()
+    r1.raise_for_status = MagicMock()
+    r1.json = MagicMock(return_value={"value": [{"id": "fid-1", "displayName": "Projects"}]})
+    r2 = MagicMock()
+    r2.raise_for_status = MagicMock()
+    r2.json = MagicMock(return_value={"value": []})
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(side_effect=[r1, r2])
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    out = await gc.resolve_mail_folder_id_by_display_name("projects")
+    assert out == "fid-1"
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_resolve_mail_folder_id_by_display_name_not_found(mock_async_client_class: MagicMock) -> None:
+    r1 = MagicMock()
+    r1.raise_for_status = MagicMock()
+    r1.json = MagicMock(return_value={"value": [{"id": "inbox-id", "displayName": "Inbox"}]})
+    r2 = MagicMock()
+    r2.raise_for_status = MagicMock()
+    r2.json = MagicMock(return_value={"value": []})
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(side_effect=[r1, r2])
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    with pytest.raises(MailFolderNotFoundError):
+        await gc.resolve_mail_folder_id_by_display_name("NoSuchFolder")
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_resolve_mail_folder_id_by_display_name_ambiguous(mock_async_client_class: MagicMock) -> None:
+    r1 = MagicMock()
+    r1.raise_for_status = MagicMock()
+    r1.json = MagicMock(
+        return_value={
+            "value": [
+                {"id": "a", "displayName": "Dup"},
+                {"id": "b", "displayName": "Dup"},
+            ],
+        },
+    )
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=r1)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    with pytest.raises(MailFolderAmbiguousError) as excinfo:
+        await gc.resolve_mail_folder_id_by_display_name("dup")
+    assert excinfo.value.match_count == 2
+
+
+@pytest.mark.asyncio
+async def test_list_inbox_rejects_folder_id_and_name_together() -> None:
+    ctx = MagicMock()
+    mock_client = MagicMock()
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        result = await list_inbox(ctx, folder_id="x", folder_name="Inbox")
+    data = json.loads(result)
+    assert data["error"] == "invalid_parameters"
+    mock_client.list_inbox.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_inbox_folder_name_resolves_then_lists() -> None:
+    ctx = MagicMock()
+    mock_client = MagicMock()
+    mock_client.resolve_mail_folder_id_by_display_name = AsyncMock(return_value="resolved-id")
+    mock_client.list_inbox = AsyncMock(return_value={"value": []})
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        result = await list_inbox(ctx, folder_name="Sent Items", top=5)
+    mock_client.resolve_mail_folder_id_by_display_name.assert_awaited_once_with("Sent Items")
+    mock_client.list_inbox.assert_awaited_once_with(
+        top=5,
+        skip=0,
+        select=_LIST_SELECT,
+        inbox_filter=None,
+        folder_id="resolved-id",
+    )
+    data = json.loads(result)
+    assert data["resolved_from_name"] is True
+    assert data["folder_id"] == "resolved-id"
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_create_mail_folder_child(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"id": "child-fid", "displayName": "Q1"})
+    mock_instance = AsyncMock()
+    mock_instance.post = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    out = await gc.create_mail_folder("Q1", parent_folder_id="parent-fid-1")
+    assert out["id"] == "child-fid"
+    mock_instance.post.assert_awaited_once_with(
+        "/me/mailFolders/parent-fid-1/childFolders",
+        json={"displayName": "Q1"},
     )
 
 
