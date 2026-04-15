@@ -18,18 +18,22 @@ from outlook_mcp.tools._common import (
     tool_error_token,
 )
 from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
-from outlook_mcp.tools.mail_query_params import build_inbox_odata_filter, build_search_kql_query
+from outlook_mcp.tools.mail_query_params import (
+    build_inbox_odata_filter,
+    build_search_kql_query,
+    normalize_priority_filter,
+)
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
 
 _DEFAULT_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,sentDateTime,conversationId,"
-    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,categories"
+    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories"
 )
 _LIST_SELECT = (
     "id,subject,bodyPreview,receivedDateTime,sentDateTime,conversationId,"
-    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,categories"
+    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories"
 )
 
 
@@ -116,12 +120,17 @@ async def search_emails(
     received_on: str | None = None,
     received_after: str | None = None,
     received_before: str | None = None,
+    priority_filter: str = "any",
 ) -> str:
     """Search the signed-in user's mailbox using **KQL** (Keyword Query Language).
 
     Graph uses ``$search`` on messages with ``ConsistencyLevel: eventual``.
 
     ``read_filter``: ``any`` (default), ``read``, or ``unread`` (adds ``read:yes`` / ``read:no``).
+
+    ``priority_filter``: ``any`` (default), ``high``, ``medium``, or ``low`` — maps to Outlook
+    message **importance** (Graph ``high`` / ``normal`` / ``low``). This is separate from
+    classifier ``priority`` on ``categorize_email``.
 
     Date filters (UTC): ``received_on`` (YYYY-MM-DD, that calendar day), or
     ``received_after`` / ``received_before`` (YYYY-MM-DD for KQL day granularity).
@@ -137,18 +146,21 @@ async def search_emails(
     except (GraphTokenExpiredError, GraphTokenMissingError) as e:
         return json.dumps(tool_error_token(e))
     try:
+        pf = normalize_priority_filter(priority_filter)
         effective_query = build_search_kql_query(
             query,
             read_filter=read_filter,
             received_on=received_on,
             received_after=received_after,
             received_before=received_before,
+            priority_filter=pf,
         )
     except ValueError as e:
         return json.dumps({"error": "invalid_parameters", "message": str(e)})
     await tool_log_info(
         ctx,
-        f"search_emails: start query={qprev!r} top={top} read_filter={read_filter!r}",
+        f"search_emails: start query={qprev!r} top={top} read_filter={read_filter!r} "
+        f"priority_filter={pf!r}",
     )
     await tool_report_progress(ctx, 10, 100, message="search_emails: start")
     try:
@@ -167,6 +179,7 @@ async def search_emails(
                 "query": query,
                 "effective_query": effective_query,
                 "read_filter": read_filter,
+                "priority_filter": pf,
                 "messages": models,
                 "count": len(models),
             }
@@ -197,6 +210,8 @@ async def list_inbox(
     received_before: str | None = None,
     folder_id: str | None = None,
     folder_name: str | None = None,
+    priority_filter: str = "any",
+    sort_by_priority: bool = False,
 ) -> str:
     """List messages in a mail folder (newest first). Default folder is Inbox (well-known ``inbox``).
 
@@ -208,6 +223,13 @@ async def list_inbox(
     folders match, returns ``folder_not_found`` or ``folder_ambiguous`` errors.
 
     When ``unread_only`` is true, only ``isRead`` false.
+
+    ``priority_filter``: ``any`` (default), ``high``, ``medium``, or ``low`` — OData filter on
+    Graph message **importance** (``high`` / ``normal`` / ``low``). Separate from classifier
+    ``priority`` on ``categorize_email``.
+
+    When ``sort_by_priority`` is true, order by importance (high first) then ``receivedDateTime``
+    descending.
 
     ``received_on`` (YYYY-MM-DD): messages received during that UTC calendar day.
 
@@ -229,11 +251,13 @@ async def list_inbox(
         )
 
     try:
+        pf = normalize_priority_filter(priority_filter)
         inbox_filter = build_inbox_odata_filter(
             unread_only,
             received_on,
             received_after,
             received_before,
+            priority_filter=pf,
         )
     except ValueError as e:
         return json.dumps({"error": "invalid_parameters", "message": str(e)})
@@ -271,6 +295,7 @@ async def list_inbox(
     await tool_log_info(
         ctx,
         f"list_inbox: start top={top} skip={skip} unread_only={unread_only} "
+        f"priority_filter={pf!r} sort_by_priority={sort_by_priority} "
         f"folder_id={folder_id!r} folder_name={folder_name!r} effective_folder_id={effective_folder_id!r}",
     )
     try:
@@ -281,6 +306,7 @@ async def list_inbox(
             select=_LIST_SELECT,
             inbox_filter=inbox_filter,
             folder_id=effective_folder_id,
+            sort_by_priority=sort_by_priority,
         )
         await tool_report_progress(ctx, 80, 100, message="list_inbox: mapping messages")
         items = data.get("value") or []
@@ -296,6 +322,8 @@ async def list_inbox(
             "top": top,
             "skip": skip,
             "unread_only": unread_only,
+            "priority_filter": pf,
+            "sort_by_priority": sort_by_priority,
             "folder_id": effective_folder_id,
             "folder_name": folder_name.strip() if folder_name else None,
             "resolved_from_name": bool(folder_name),

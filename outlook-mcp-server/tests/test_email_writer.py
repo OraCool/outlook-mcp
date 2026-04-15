@@ -16,6 +16,7 @@ from outlook_mcp.tools.email_writer import (
     mark_as_read,
     move_email,
     send_email,
+    set_email_priority,
     set_message_categories,
 )
 
@@ -194,6 +195,35 @@ async def test_mark_as_read_success() -> None:
     assert data["ok"] is True
     assert data["is_read"] is False
     mock_client.update_message.assert_awaited_once_with("mid-1", {"isRead": False})
+
+
+@pytest.mark.asyncio
+async def test_set_email_priority_write_disabled() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsDisabled()):
+        result = await set_email_priority(ctx=None, message_id="m1", priority="HIGH")
+    data = json.loads(result)
+    assert data["error"] == "write_disabled"
+
+
+@pytest.mark.asyncio
+async def test_set_email_priority_validation() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        result = await set_email_priority(ctx=None, message_id="m1", priority="URGENT")
+    data = json.loads(result)
+    assert data["error"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_set_email_priority_success() -> None:
+    mock_client = AsyncMock()
+    mock_client.update_message = AsyncMock(return_value={})
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await set_email_priority(ctx=None, message_id="mid-1", priority="medium")
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["importance"] == "normal"
+    mock_client.update_message.assert_awaited_once_with("mid-1", {"importance": "normal"})
 
 
 @pytest.mark.asyncio

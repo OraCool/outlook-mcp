@@ -16,6 +16,7 @@ from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMis
 from outlook_mcp.config import get_settings
 from outlook_mcp.tools._common import make_graph_client, sanitize_client_error_message, tool_error_token
 from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_report_progress
+from outlook_mcp.tools.mail_query_params import graph_importance_for_patch
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
@@ -213,6 +214,52 @@ async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> s
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"mark_as_read: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+async def set_email_priority(ctx: Context, message_id: str, priority: str) -> str:
+    """Set Outlook message importance (Graph ``importance``). Requires ENABLE_WRITE_OPERATIONS and Mail.ReadWrite.
+
+    ``priority``: ``HIGH``, ``MEDIUM``, or ``LOW`` (maps to Graph ``high``, ``normal``, ``low``).
+    Persists on the message; not the same as classifier ``priority`` on ``categorize_email``.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable set_email_priority (requires Mail.ReadWrite).",
+            }
+        )
+
+    try:
+        importance = graph_importance_for_patch(priority)
+    except ValueError as e:
+        return json.dumps({"error": "validation_error", "message": str(e)})
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"set_email_priority: message_id={message_id!r} importance={importance!r}")
+    await tool_report_progress(ctx, 20, 100, message="set_email_priority: start")
+    try:
+        await tool_report_progress(ctx, 60, 100, message="set_email_priority: calling Graph")
+        await client.update_message(message_id, {"importance": importance})
+        await tool_report_progress(ctx, 100, 100, message="set_email_priority: complete")
+        return json.dumps({"ok": True, "message_id": message_id, "importance": importance})
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"set_email_priority: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"set_email_priority: network_error {type(e).__name__}")
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 

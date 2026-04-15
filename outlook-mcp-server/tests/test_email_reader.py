@@ -143,6 +143,7 @@ def test_list_select_omits_full_body_field() -> None:
     parts = {p.strip() for p in _LIST_SELECT.split(",")}
     assert "body" not in parts
     assert "bodyPreview" in parts
+    assert "importance" in parts
 
 
 @pytest.mark.asyncio
@@ -194,6 +195,32 @@ async def test_graph_mail_client_list_inbox_unread_only_adds_filter(mock_async_c
             "$skip": "2",
             "$orderby": "receivedDateTime desc",
             "$filter": "isRead eq false",
+            "$select": _LIST_SELECT,
+        },
+    )
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_inbox_sort_by_priority_orderby(mock_async_client_class: MagicMock) -> None:
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json = MagicMock(return_value={"value": []})
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=mock_response)
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    await gc.list_inbox(top=3, skip=1, select=_LIST_SELECT, sort_by_priority=True)
+    mock_instance.get.assert_awaited_once_with(
+        "/me/mailFolders/inbox/messages",
+        params={
+            "$top": "3",
+            "$skip": "1",
+            "$orderby": "importance desc,receivedDateTime desc",
             "$select": _LIST_SELECT,
         },
     )
@@ -261,6 +288,44 @@ async def test_graph_mail_client_list_inbox_unread_inefficient_filter_fallback(m
     assert "$orderby" not in second_call[1]["params"]
     assert second_call[1]["params"]["$top"] == "1"
     assert out["value"] == [{"id": "newer", "receivedDateTime": "2026-01-02T10:00:00Z"}]
+
+
+@pytest.mark.asyncio
+@patch("outlook_mcp.auth.graph_client.httpx.AsyncClient")
+async def test_graph_mail_client_list_inbox_inefficient_fallback_sort_by_priority(mock_async_client_class: MagicMock) -> None:
+    bad = MagicMock()
+    bad.status_code = 400
+    bad.text = '{"error":{"code":"InefficientFilter"}}'
+
+    good = MagicMock()
+    good.raise_for_status = MagicMock()
+    good.status_code = 200
+    good.json = MagicMock(
+        return_value={
+            "value": [
+                {"id": "n", "importance": "normal", "receivedDateTime": "2026-01-03T10:00:00Z"},
+                {"id": "h", "importance": "high", "receivedDateTime": "2026-01-01T10:00:00Z"},
+                {"id": "l", "importance": "low", "receivedDateTime": "2026-01-02T10:00:00Z"},
+            ],
+        },
+    )
+
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(side_effect=[bad, good])
+    mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_async_client_class.return_value = mock_instance
+
+    gc = GraphMailClient("fake-token")
+    out = await gc.list_inbox(
+        top=1,
+        skip=0,
+        select=_LIST_SELECT,
+        inbox_filter="isRead eq false",
+        sort_by_priority=True,
+    )
+
+    assert out["value"][0]["id"] == "h"
 
 
 @pytest.mark.asyncio
@@ -425,7 +490,6 @@ async def test_list_inbox_missing_token_returns_despite_slow_mcp_notify() -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_search_emails_combined_kql_and_effective_query() -> None:
     ctx = MagicMock()
     mock_client = MagicMock()
@@ -446,6 +510,18 @@ async def test_search_emails_combined_kql_and_effective_query() -> None:
     data = json.loads(result)
     assert data["effective_query"] == kql
     assert data["read_filter"] == "unread"
+    assert data["priority_filter"] == "any"
+
+
+@pytest.mark.asyncio
+async def test_search_emails_priority_filter_in_kql() -> None:
+    ctx = MagicMock()
+    mock_client = MagicMock()
+    mock_client.search_messages = AsyncMock(return_value={"value": []})
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        await search_emails("subject:pay", ctx, top=3, priority_filter="low")
+    kql = mock_client.search_messages.call_args[0][0]
+    assert "importance:low" in kql
 
 
 @pytest.mark.asyncio
@@ -461,6 +537,7 @@ async def test_list_inbox_passes_unread_only_and_echoes_in_json() -> None:
         select=_LIST_SELECT,
         inbox_filter="isRead eq false",
         folder_id=None,
+        sort_by_priority=False,
     )
     data = json.loads(result)
     assert data["unread_only"] is True
@@ -666,10 +743,28 @@ async def test_list_inbox_folder_name_resolves_then_lists() -> None:
         select=_LIST_SELECT,
         inbox_filter=None,
         folder_id="resolved-id",
+        sort_by_priority=False,
     )
     data = json.loads(result)
     assert data["resolved_from_name"] is True
     assert data["folder_id"] == "resolved-id"
+
+
+@pytest.mark.asyncio
+async def test_list_inbox_priority_filter_and_sort_passed_to_graph() -> None:
+    ctx = MagicMock()
+    mock_client = MagicMock()
+    mock_client.list_inbox = AsyncMock(return_value={"value": []})
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        await list_inbox(ctx, top=2, priority_filter="high", sort_by_priority=True)
+    mock_client.list_inbox.assert_awaited_once_with(
+        top=2,
+        skip=0,
+        select=_LIST_SELECT,
+        inbox_filter="importance eq 'high'",
+        folder_id=None,
+        sort_by_priority=True,
+    )
 
 
 @pytest.mark.asyncio

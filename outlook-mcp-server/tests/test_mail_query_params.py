@@ -9,6 +9,17 @@ from outlook_mcp.tools.mail_query_params import (
 )
 
 
+def test_inbox_filter_priority_high() -> None:
+    f = build_inbox_odata_filter(
+        False,
+        None,
+        None,
+        None,
+        priority_filter="high",
+    )
+    assert f == "importance eq 'high'"
+
+
 def test_inbox_filter_unread_and_day() -> None:
     f = build_inbox_odata_filter(
         True,
@@ -43,10 +54,12 @@ def test_search_kql_read_and_dates() -> None:
         "subject:pay",
         read_filter="unread",
         received_on="2024-03-01",
+        priority_filter="medium",
     )
     assert q.startswith("subject:pay")
     assert "read:no" in q
     assert "received:2024-03-01..2024-03-01" in q
+    assert "importance:normal" in q
 
 
 def test_search_kql_open_ended_after() -> None:

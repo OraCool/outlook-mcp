@@ -61,6 +61,7 @@ def build_mcp() -> FastMCP:
         received_on: str | None = None,
         received_after: str | None = None,
         received_before: str | None = None,
+        priority_filter: str = "any",
     ) -> str:
         """Search the signed-in user's mailbox using KQL (Keyword Query Language).
 
@@ -75,6 +76,9 @@ def build_mcp() -> FastMCP:
         Date filters (UTC, YYYY-MM-DD for KQL): ``received_on`` (single day), or
         ``received_after`` / ``received_before`` (range or open-ended). Do not combine
         ``received_on`` with ``received_after`` / ``received_before``.
+
+        ``priority_filter``: ``any`` (default), ``high``, ``medium``, or ``low`` — Outlook
+        message importance (Graph ``high`` / ``normal`` / ``low``), not classifier priority.
 
         Examples (combine with AND / OR where supported):
         - ``from:alice@contoso.com``
@@ -93,6 +97,7 @@ def build_mcp() -> FastMCP:
             received_on=received_on,
             received_after=received_after,
             received_before=received_before,
+            priority_filter=priority_filter,
         )
 
     @mcp.tool()
@@ -106,6 +111,8 @@ def build_mcp() -> FastMCP:
         received_before: str | None = None,
         folder_id: str | None = None,
         folder_name: str | None = None,
+        priority_filter: str = "any",
+        sort_by_priority: bool = False,
     ) -> str:
         """List messages in a mail folder (default: Inbox).
 
@@ -123,6 +130,9 @@ def build_mcp() -> FastMCP:
         ``received_after`` / ``received_before``: ISO date or datetime; lower bound
         inclusive, upper bound exclusive. Do not set ``received_on`` together with
         ``received_after`` / ``received_before``.
+
+        ``priority_filter``: ``any``, ``high``, ``medium``, or ``low`` (Outlook importance).
+        ``sort_by_priority``: when true, order by importance then newest first.
         """
         return await email_reader.list_inbox(
             ctx,
@@ -134,6 +144,8 @@ def build_mcp() -> FastMCP:
             received_before=received_before,
             folder_id=folder_id,
             folder_name=folder_name,
+            priority_filter=priority_filter,
+            sort_by_priority=sort_by_priority,
         )
 
     @mcp.tool()
@@ -258,6 +270,15 @@ def build_mcp() -> FastMCP:
     async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> str:
         """Mark a message as read or unread (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite)."""
         return await email_writer.mark_as_read(ctx, message_id, is_read=is_read)
+
+    @mcp.tool()
+    async def set_email_priority(ctx: Context, message_id: str, priority: str) -> str:
+        """Set Outlook message importance: HIGH, MEDIUM, or LOW (Graph high/normal/low).
+
+        Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite. Distinct from classifier
+        priority on ``categorize_email``.
+        """
+        return await email_writer.set_email_priority(ctx, message_id, priority)
 
     @mcp.tool()
     async def move_email(ctx: Context, message_id: str, destination_folder_id: str) -> str:
