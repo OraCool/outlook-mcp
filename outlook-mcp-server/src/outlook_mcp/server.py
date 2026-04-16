@@ -273,7 +273,7 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     async def set_email_priority(ctx: Context, message_id: str, priority: str) -> str:
-        """Set Outlook message importance: HIGH, MEDIUM, or LOW (Graph high/normal/low).
+        """Set Outlook message importance: HIGH, MEDIUM, or LOW (case-insensitive; Graph high/normal/low).
 
         Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite. Distinct from classifier
         priority on ``categorize_email``.

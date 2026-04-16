@@ -326,6 +326,13 @@ async def test_graph_mail_client_list_inbox_inefficient_fallback_sort_by_priorit
     )
 
     assert out["value"][0]["id"] == "h"
+    assert mock_instance.get.await_count == 2
+    fallback_call = mock_instance.get.await_args_list[1]
+    assert fallback_call[0][0] == "/me/mailFolders/inbox/messages"
+    assert fallback_call[1]["params"]["$filter"] == "isRead eq false"
+    assert fallback_call[1]["params"]["$select"] == _LIST_SELECT
+    assert "$orderby" not in fallback_call[1]["params"]
+    assert fallback_call[1]["params"]["$top"] == "999"
 
 
 @pytest.mark.asyncio

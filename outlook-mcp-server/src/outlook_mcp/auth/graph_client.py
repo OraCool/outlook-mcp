@@ -204,7 +204,8 @@ class GraphMailClient:
         sort_by_priority: bool = False,
     ) -> dict[str, Any]:
         """Folder message list without ``$orderby`` when Graph rejects filter+orderby (sort locally)."""
-        need = min(skip + top, 999)
+        # Without server-side ``$orderby``, priority sorting requires a wider sample.
+        need = 999 if sort_by_priority else min(skip + top, 999)
         params: dict[str, str] = {
             "$filter": inbox_filter,
             "$top": str(need),
