@@ -61,9 +61,11 @@ _CLASSIFICATION_JSON_SCHEMA = """{
   "extracted_data": {
     "promised_date": "ISO8601 date or null",
     "due_date": "ISO8601 invoice due date or null",
+    "amount": number or null,
     "disputed_amount": number or null,
     "currency": "ISO4217 code or null (e.g. EUR, USD)",
     "invoice_numbers": ["string"],
+    "customer_reference": "string or null",
     "payment_reference": "string or null"
   },
   "suggested_actions": [
@@ -93,6 +95,8 @@ Rules:
 - Suggest 2-4 contextual next actions in "suggested_actions" (first should be primary).
 - Set "thread_id" to the email's conversationId from the provided message JSON when present.
 - Set "sender_company" when you can infer counterparty/company from signature or domain (placeholders for PII).
+- Set "extracted_data.amount" to any monetary amount explicitly stated (general; use for non-disputed amounts too).
+- Set "extracted_data.customer_reference" to the customer's own PO number or purchase order reference if explicitly mentioned.
 - Respond with a single JSON object only (no markdown), matching this schema:
 {_CLASSIFICATION_JSON_SCHEMA}
 

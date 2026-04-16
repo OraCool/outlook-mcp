@@ -11,6 +11,18 @@ import httpx
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
+def _importance_rank(importance: str | None) -> int:
+    """Numeric rank for sorting (higher = more important). Unknown or missing → normal."""
+    if not importance or not isinstance(importance, str):
+        return 2
+    v = importance.strip().lower()
+    if v == "high":
+        return 3
+    if v == "low":
+        return 1
+    return 2
+
+
 class MailFolderNotFoundError(Exception):
     """No mail folder matched the given display name (case-insensitive)."""
 
@@ -133,6 +145,7 @@ class GraphMailClient:
         select: str | None = None,
         inbox_filter: str | None = None,
         folder_id: str | None = None,
+        sort_by_priority: bool = False,
     ) -> dict[str, Any]:
         """List messages in a mail folder, newest first (default folder: well-known ``inbox``).
 
@@ -141,14 +154,20 @@ class GraphMailClient:
 
         ``inbox_filter`` is the full OData ``$filter`` string (e.g. ``isRead eq false``,
         ``receivedDateTime`` bounds). If Graph returns 400 ``InefficientFilter`` for
-        ``$filter`` combined with ``$orderby``, retries without ``$orderby``, sorts by
-        ``receivedDateTime`` descending in memory, then applies ``skip`` / ``top``.
+        ``$filter`` combined with ``$orderby``, retries without ``$orderby``, sorts in memory
+        (by importance then ``receivedDateTime`` when ``sort_by_priority`` is true), then
+        applies ``skip`` / ``top``.
         """
         folder_segment = _encode_mail_folder_id_for_path(folder_id) if folder_id else "inbox"
+        orderby = (
+            "importance desc,receivedDateTime desc"
+            if sort_by_priority
+            else "receivedDateTime desc"
+        )
         params: dict[str, str] = {
             "$top": str(top),
             "$skip": str(skip),
-            "$orderby": "receivedDateTime desc",
+            "$orderby": orderby,
         }
         if inbox_filter:
             params["$filter"] = inbox_filter
@@ -168,6 +187,7 @@ class GraphMailClient:
                         top=top,
                         skip=skip,
                         select=select,
+                        sort_by_priority=sort_by_priority,
                     )
             r.raise_for_status()
             return r.json()
@@ -181,9 +201,11 @@ class GraphMailClient:
         top: int,
         skip: int,
         select: str | None,
+        sort_by_priority: bool = False,
     ) -> dict[str, Any]:
         """Folder message list without ``$orderby`` when Graph rejects filter+orderby (sort locally)."""
-        need = min(skip + top, 999)
+        # Without server-side ``$orderby``, priority sorting requires a wider sample.
+        need = 999 if sort_by_priority else min(skip + top, 999)
         params: dict[str, str] = {
             "$filter": inbox_filter,
             "$top": str(need),
@@ -194,10 +216,19 @@ class GraphMailClient:
         r.raise_for_status()
         body = r.json()
         values = list(body.get("value") or [])
-        values.sort(
-            key=lambda m: (m.get("receivedDateTime") or ""),
-            reverse=True,
-        )
+        if sort_by_priority:
+            values.sort(
+                key=lambda m: (
+                    _importance_rank(m.get("importance")),
+                    m.get("receivedDateTime") or "",
+                ),
+                reverse=True,
+            )
+        else:
+            values.sort(
+                key=lambda m: (m.get("receivedDateTime") or ""),
+                reverse=True,
+            )
         body["value"] = values[skip : skip + top]
         return body
 
