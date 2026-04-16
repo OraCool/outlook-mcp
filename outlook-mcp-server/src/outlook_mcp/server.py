@@ -250,6 +250,11 @@ def build_mcp() -> FastMCP:
         )
 
     @mcp.tool()
+    async def send_draft_email(ctx: Context, draft_id: str) -> str:
+        """Send an existing draft by Graph message id (requires ENABLE_WRITE_OPERATIONS=true and Mail.Send)."""
+        return await email_writer.send_draft_email(ctx, draft_id=draft_id)
+
+    @mcp.tool()
     async def create_draft(
         ctx: Context,
         subject: str,

@@ -264,6 +264,14 @@ class GraphMailClient:
             r.raise_for_status()
             return r.json()
 
+    async def send_draft(self, message_id: str) -> None:
+        """Send an existing draft message by Graph message id."""
+        enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
+        async with self._client() as c:
+            r = await c.post(f"{base}/messages/{enc}/send")
+            r.raise_for_status()
+
     async def update_message(self, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         enc = _encode_message_id_for_path(message_id)
         base = self._user_prefix()
