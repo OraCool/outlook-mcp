@@ -99,9 +99,18 @@ class ExtractedData(BaseModel):
 
     promised_date: str | None = Field(default=None, max_length=64)
     due_date: str | None = Field(default=None, max_length=64)
+    amount: float | None = Field(
+        default=None,
+        description="Any monetary amount explicitly mentioned in the email (not necessarily disputed).",
+    )
     disputed_amount: float | None = None
     currency: str | None = Field(default=None, max_length=8)
     invoice_numbers: list[str] = Field(default_factory=list)
+    customer_reference: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Customer's own PO number or purchase order reference as stated in the email.",
+    )
     payment_reference: str | None = Field(default=None, max_length=512)
 
 
