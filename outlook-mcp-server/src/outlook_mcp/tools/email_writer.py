@@ -135,6 +135,45 @@ async def send_email(
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
+async def send_draft_email(ctx: Context, draft_id: str) -> str:
+    """Send an existing draft email by Graph message id (delegated ``Mail.Send``)."""
+    s = get_settings()
+    if not s.enable_write_operations:
+        await tool_log_info(ctx, "send_draft_email: write_disabled (ENABLE_WRITE_OPERATIONS=false)")
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable send_draft_email.",
+            }
+        )
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"send_draft_email: start draft_id={draft_id!r}")
+    await tool_report_progress(ctx, 20, 100, message="send_draft_email: start")
+    try:
+        await tool_report_progress(ctx, 60, 100, message="send_draft_email: calling Graph messages/{id}/send")
+        await client.send_draft(draft_id)
+        await tool_report_progress(ctx, 100, 100, message="send_draft_email: complete")
+        await tool_log_info(ctx, "send_draft_email: Graph accepted draft send")
+        return json.dumps({"ok": True, "draft_id": draft_id, "message": "Draft accepted by Graph send endpoint."})
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"send_draft_email: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"send_draft_email: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
 async def create_draft(
     ctx: Context,
     subject: str,

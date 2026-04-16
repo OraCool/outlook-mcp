@@ -16,6 +16,7 @@ from outlook_mcp.tools.email_writer import (
     mark_as_read,
     move_email,
     send_email,
+    send_draft_email,
     set_email_priority,
     set_message_categories,
 )
@@ -82,6 +83,71 @@ async def test_send_email_multiple_recipients() -> None:
             )
     payload = mock_client.send_mail.call_args[0][0]
     assert len(payload["message"]["toRecipients"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_send_draft_email_write_disabled() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsDisabled()):
+        result = await send_draft_email(ctx=None, draft_id="draft-1")
+    data = json.loads(result)
+    assert data["error"] == "write_disabled"
+    assert "ENABLE_WRITE_OPERATIONS" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_send_draft_email_success() -> None:
+    mock_client = AsyncMock()
+    mock_client.send_draft = AsyncMock(return_value=None)
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await send_draft_email(ctx=None, draft_id="draft-123")
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["draft_id"] == "draft-123"
+    mock_client.send_draft.assert_awaited_once_with("draft-123")
+
+
+@pytest.mark.asyncio
+async def test_send_draft_email_token_missing() -> None:
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch(
+            "outlook_mcp.tools.email_writer.make_graph_client",
+            side_effect=GraphTokenMissingError("no token"),
+        ):
+            result = await send_draft_email(ctx=None, draft_id="draft-123")
+    data = json.loads(result)
+    assert data["error"] == "missing_token"
+
+
+@pytest.mark.asyncio
+async def test_send_draft_email_http_error() -> None:
+    mock_client = AsyncMock()
+    mock_response = AsyncMock()
+    mock_response.status_code = 403
+    mock_response.text = "Forbidden"
+    mock_client.send_draft = AsyncMock(
+        side_effect=httpx.HTTPStatusError("403", request=AsyncMock(), response=mock_response)
+    )
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await send_draft_email(ctx=None, draft_id="draft-123")
+    data = json.loads(result)
+    assert data["error"] == "http_error"
+    assert data["status_code"] == 403
+
+
+@pytest.mark.asyncio
+async def test_send_draft_email_network_error_sanitized() -> None:
+    mock_client = AsyncMock()
+    mock_client.send_draft = AsyncMock(
+        side_effect=httpx.ConnectError("failed contact@evil.com", request=MagicMock()),
+    )
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
+            result = await send_draft_email(ctx=None, draft_id="draft-123")
+    data = json.loads(result)
+    assert data["error"] == "network_error"
+    assert "[EMAIL_REDACTED]" in data["message"]
 
 
 @pytest.mark.asyncio
