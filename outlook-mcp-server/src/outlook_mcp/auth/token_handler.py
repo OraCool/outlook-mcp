@@ -12,7 +12,7 @@ import msal
 from starlette.requests import Request
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 _BEARER_PREFIX = "bearer "
 

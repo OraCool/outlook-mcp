@@ -19,7 +19,7 @@ from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_repo
 from outlook_mcp.tools.mail_query_params import graph_importance_for_patch
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 _MAX_MESSAGE_CATEGORIES = 25
 

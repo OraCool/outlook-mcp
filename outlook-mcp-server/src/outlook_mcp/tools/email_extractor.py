@@ -28,7 +28,7 @@ from outlook_mcp.tools._email_prompt import (
 from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 EXTRACTION_SYSTEM = """Extract structured AR-relevant facts from the email described by the user message.
 Respond with a single JSON object only (no markdown), matching this schema:

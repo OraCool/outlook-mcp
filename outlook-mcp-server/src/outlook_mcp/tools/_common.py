@@ -25,7 +25,7 @@ from outlook_mcp.models.errors import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 
 def graph_message_to_model(raw: dict[str, Any]) -> EmailMessage:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -12,9 +12,9 @@ from outlook_mcp.config import get_settings
 from outlook_mcp.tools import email_classifier, email_drafter, email_extractor, email_reader, email_summarizer, email_writer
 
 
-def build_mcp() -> FastMCP:
+def build_mcp() -> MCPServer:
     s = get_settings()
-    mcp = FastMCP(
+    mcp = MCPServer(
         name="outlook-mcp",
         instructions=(
             "Microsoft Outlook / Graph mail tools for AR Email Management. "
@@ -24,9 +24,6 @@ def build_mcp() -> FastMCP:
             "Graph uses eventual consistency for this API. Reference: "
             "https://learn.microsoft.com/en-us/graph/search-query-parameter"
         ),
-        host=s.mcp_host,
-        port=s.mcp_port,
-        stateless_http=s.mcp_stateless_http,
     )
 
     @mcp.custom_route("/health", methods=["GET"])
@@ -356,9 +353,15 @@ def main() -> None:
         )
         mcp_app.run(transport="stdio")
     elif transport == "sse":
-        mcp_app.run(transport="sse")
+        # ``run_sse_async`` takes no ``stateless_http`` — SSE is inherently stateful.
+        mcp_app.run(transport="sse", host=s.mcp_host, port=s.mcp_port)
     else:
-        mcp_app.run(transport="streamable-http")
+        mcp_app.run(
+            transport="streamable-http",
+            host=s.mcp_host,
+            port=s.mcp_port,
+            stateless_http=s.mcp_stateless_http,
+        )
 
 
 if __name__ == "__main__":
