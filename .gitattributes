@@ -1,0 +1,12 @@
+# Normalize line endings so mixed CRLF/LF cannot creep back in.
+# Without this, sed/grep patterns anchored with $ silently skip CRLF files.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.whl binary
+*.gz binary

@@ -4,6 +4,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
-.env
+# Ignore every local env file (incl. .bak/.local copies that hold live tokens),
+# but keep the committed template.
+.env*
+!.env.example
 dist/
 build/
