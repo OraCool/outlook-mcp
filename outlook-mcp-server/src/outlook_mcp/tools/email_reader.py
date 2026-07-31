@@ -29,11 +29,11 @@ if TYPE_CHECKING:
 
 _DEFAULT_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,sentDateTime,conversationId,"
-    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories"
+    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories,flag"
 )
 _LIST_SELECT = (
     "id,subject,bodyPreview,receivedDateTime,sentDateTime,conversationId,"
-    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories"
+    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories,flag"
 )
 
 

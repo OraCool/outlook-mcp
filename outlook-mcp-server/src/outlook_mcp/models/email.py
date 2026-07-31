@@ -41,6 +41,25 @@ class EmailAddress(BaseModel):
     name: str | None = None
 
 
+class MessageFlag(BaseModel):
+    """Graph ``followupFlag``: Outlook's follow-up flag.
+
+    ``flag_status`` is ``notFlagged``, ``flagged`` or ``complete``. Note that ``complete``
+    ("mark as complete") and ``notFlagged`` ("clear the flag") are different outcomes: the
+    former keeps a record of finished follow-up, the latter erases the flag entirely.
+
+    The date fields are Graph ``dateTimeTimeZone`` objects (``{"dateTime": ..., "timeZone": ...}``),
+    kept as-is rather than flattened so the originating time zone is not silently lost.
+    """
+
+    flag_status: str | None = Field(default=None, alias="flagStatus")
+    start_date_time: dict[str, Any] | None = Field(default=None, alias="startDateTime")
+    due_date_time: dict[str, Any] | None = Field(default=None, alias="dueDateTime")
+    completed_date_time: dict[str, Any] | None = Field(default=None, alias="completedDateTime")
+
+    model_config = {"populate_by_name": True}
+
+
 class EmailMessage(BaseModel):
     """Subset of Graph message fields returned by tools."""
 
@@ -67,6 +86,10 @@ class EmailMessage(BaseModel):
         description="Graph message ``importance``: ``low``, ``normal``, or ``high``.",
     )
     categories: list[str] = Field(default_factory=list)
+    flag: MessageFlag | None = Field(
+        default=None,
+        description="Graph ``flag`` (followupFlag): Outlook follow-up flag and its dates.",
+    )
 
     model_config = {"populate_by_name": True}
 

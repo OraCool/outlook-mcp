@@ -344,7 +344,7 @@ async def test_create_reply_draft_success() -> None:
             result = await create_reply_draft(ctx=None, message_id="orig", comment="Hi")
     data = json.loads(result)
     assert data["ok"] is True
-    mock_client.create_reply.assert_awaited_once_with("orig", comment="Hi")
+    mock_client.create_reply.assert_awaited_once_with("orig", comment="Hi", content_type="Text")
 
 
 @pytest.mark.asyncio
@@ -356,7 +356,7 @@ async def test_create_reply_draft_without_comment() -> None:
             result = await create_reply_draft(ctx=None, message_id="orig", comment=None)
     data = json.loads(result)
     assert data["ok"] is True
-    mock_client.create_reply.assert_awaited_once_with("orig", comment=None)
+    mock_client.create_reply.assert_awaited_once_with("orig", comment=None, content_type="Text")
 
 
 @pytest.mark.asyncio
@@ -436,3 +436,52 @@ async def test_create_mail_folder_rejects_parent_id_and_name() -> None:
     data = json.loads(result)
     assert data["error"] == "invalid_parameters"
     mock_client.create_mail_folder.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_reply_draft_passes_html_content_type() -> None:
+    """HTML replies must reach the Graph client; the plain-text default stays unchanged."""
+    mock_client = AsyncMock()
+    mock_client.create_reply = AsyncMock(return_value={"id": "draft-1"})
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings") as gs,
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        gs.return_value = MagicMock(enable_write_operations=True)
+        out = json.loads(
+            await create_reply_draft(MagicMock(log=AsyncMock(), report_progress=AsyncMock()),
+                                     "orig", comment="<b>Hi</b>", content_type="HTML")
+        )
+    assert out["ok"] is True
+    mock_client.create_reply.assert_awaited_once_with("orig", comment="<b>Hi</b>", content_type="HTML")
+
+
+@pytest.mark.asyncio
+async def test_graph_client_html_reply_preserves_the_quoted_original() -> None:
+    """Graph drops the quote if message.body is passed to createReply (v1.0 and beta alike),
+    so the HTML path must create the reply first and PATCH our markup in front of the quote."""
+    from outlook_mcp.auth.graph_client import GraphMailClient
+
+    quoted = "<div>-----Original Message-----<br>lots of quoted text</div>"
+    posted = MagicMock(status_code=201)
+    posted.json = MagicMock(return_value={"id": "draft-1", "body": {"content": quoted}})
+    posted.raise_for_status = MagicMock()
+    patched = MagicMock(status_code=200, content=b"{}")
+    patched.json = MagicMock(return_value={"id": "draft-1"})
+    patched.raise_for_status = MagicMock()
+
+    http = MagicMock()
+    http.post = AsyncMock(return_value=posted)
+    http.patch = AsyncMock(return_value=patched)
+    http.__aenter__ = AsyncMock(return_value=http)
+    http.__aexit__ = AsyncMock(return_value=False)
+
+    client = GraphMailClient("tok")
+    with patch.object(GraphMailClient, "_client", return_value=http):
+        await client.create_reply("orig", comment="<p>Hi</p>", content_type="HTML")
+
+    # createReply must be called WITHOUT message.body, or the quote is lost.
+    assert http.post.await_args.kwargs.get("json") is None
+    sent = http.patch.await_args.kwargs["json"]["body"]
+    assert sent["contentType"] == "HTML"
+    assert sent["content"] == "<p>Hi</p>" + quoted
