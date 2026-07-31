@@ -9,7 +9,7 @@ from mcp.types import SamplingMessage, TextContent
 
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
-from outlook_mcp.pii.redactor import redact_email_json_if_enabled
+from outlook_mcp.pii.redactor import anonymize_email_json_if_enabled, restore_text
 from outlook_mcp.tools._common import (
     email_json_for_tool_response,
     graph_message_to_model,
@@ -101,7 +101,7 @@ async def draft_reply(
 
     # Build user text with email + optional classification context
     safe_email_json = sanitize_email_json_for_prompt(email_json)
-    safe_email_json = redact_email_json_if_enabled(safe_email_json)
+    safe_email_json, pii_map = anonymize_email_json_if_enabled(safe_email_json)
     user_text = build_untrusted_email_user_text(message_id, safe_email_json)
 
     if classification_context:
@@ -132,6 +132,9 @@ async def draft_reply(
             temperature=0.3,
         )
         text = sampling_response_text(result)
+        # The model reasoned over anonymized text, so its draft addresses "[PERSON_1]".
+        # Restore before parsing: a draft is meant to be sent to a real recipient.
+        text = restore_text(text, pii_map)
         parsed = parse_json_object(text)
         if parsed.get("email_id") != message_id:
             parsed["email_id"] = message_id
