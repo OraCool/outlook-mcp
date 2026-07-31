@@ -27,7 +27,7 @@ from outlook_mcp.tools._email_prompt import (
 from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 _DRAFT_FETCH_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,from,sender,toRecipients,"

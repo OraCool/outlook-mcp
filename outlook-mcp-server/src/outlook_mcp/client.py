@@ -28,7 +28,7 @@ from mcp.types import (
 from outlook_mcp.config import Settings, get_settings
 
 if TYPE_CHECKING:
-    from mcp.shared.context import RequestContext
+    from mcp.client.context import ClientRequestContext
 
 _DEV_CLIENT_INFO = Implementation(name="outlook-mcp-dev-client", version="0.3.0")
 _BEARER = "bearer "
@@ -51,8 +51,8 @@ async def _stderr_tool_progress(progress: float, total: float | None, message: s
 
 def _collect_prompt_text(params: CreateMessageRequestParams) -> str:
     parts: list[str] = []
-    if params.systemPrompt:
-        parts.append(params.systemPrompt)
+    if params.system_prompt:
+        parts.append(params.system_prompt)
     for msg in params.messages:
         parts.append(_sampling_message_text(msg))
     return "\n".join(parts)
@@ -116,7 +116,7 @@ def _stub_extraction_payload(email_id: str) -> dict[str, Any]:
 
 
 async def stub_sampling_callback(
-    context: RequestContext[ClientSession, Any],
+    context: ClientRequestContext,
     params: CreateMessageRequestParams,
 ) -> CreateMessageResult:
     """Return valid placeholder JSON so ``categorize_email`` / ``extract_email_data`` complete with sampling."""

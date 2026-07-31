@@ -25,7 +25,7 @@ from outlook_mcp.tools.mail_query_params import (
 )
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 _DEFAULT_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,sentDateTime,conversationId,"

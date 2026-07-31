@@ -13,10 +13,10 @@ from outlook_mcp.auth.oauth_session import get_oauth_session_store
 from outlook_mcp.config import get_settings
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
 
-def register_oauth_routes(mcp: FastMCP) -> None:
+def register_oauth_routes(mcp: MCPServer) -> None:
     @mcp.custom_route("/oauth/login", methods=["GET"])
     async def oauth_login(_request: Request) -> RedirectResponse | HTMLResponse:  # noqa: ARG001
         s = get_settings()

@@ -30,7 +30,7 @@ from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning,
 from outlook_mcp.tools.email_writer import set_message_categories
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 _CLASSIFICATION_FETCH_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,from,sender,toRecipients,"
