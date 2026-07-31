@@ -225,3 +225,57 @@ def build_search_kql_query(
         parts.append(imp)
 
     return " AND ".join(parts)
+
+
+_FLAG_STATUS_TO_GRAPH = {
+    "flagged": "flagged",
+    "complete": "complete",
+    "completed": "complete",
+    "notflagged": "notFlagged",
+    "clear": "notFlagged",
+    "none": "notFlagged",
+}
+
+
+def _graph_date_time_zone(value: str, time_zone: str) -> dict[str, str]:
+    """Wrap a date/datetime as a Graph ``dateTimeTimeZone``.
+
+    A bare ``YYYY-MM-DD`` is widened to end of business (17:00) rather than midnight: a due
+    date of "today at 00:00" is already overdue the moment it is set.
+    """
+    v = value.strip()
+    if len(v) == 10 and v.count("-") == 2:
+        v = f"{v}T17:00:00"
+    return {"dateTime": v, "timeZone": time_zone}
+
+
+def graph_flag_for_patch(
+    status: str,
+    *,
+    due_date: str | None = None,
+    start_date: str | None = None,
+    time_zone: str = "UTC",
+) -> dict[str, object]:
+    """Build the Graph ``flag`` payload for PATCH /messages/{id}.
+
+    ``status``: ``FLAGGED``, ``COMPLETE`` or ``NOTFLAGGED`` (case-insensitive; ``COMPLETED``
+    and ``CLEAR`` are accepted as aliases). ``complete`` records finished follow-up while
+    ``notFlagged`` erases the flag — they are not interchangeable.
+
+    Graph rejects ``dueDateTime`` without ``startDateTime``, so ``start_date`` defaults to the
+    due date instead of failing the request.
+    """
+    token = (status or "").strip().lower().replace("_", "").replace("-", "")
+    if token not in _FLAG_STATUS_TO_GRAPH:
+        raise ValueError('status must be "FLAGGED", "COMPLETE", or "NOTFLAGGED".')
+    graph_status = _FLAG_STATUS_TO_GRAPH[token]
+
+    flag: dict[str, object] = {"flagStatus": graph_status}
+    if due_date:
+        if graph_status == "notFlagged":
+            raise ValueError("due_date cannot be combined with NOTFLAGGED (the flag is being cleared).")
+        flag["dueDateTime"] = _graph_date_time_zone(due_date, time_zone)
+        flag["startDateTime"] = _graph_date_time_zone(start_date or due_date, time_zone)
+    elif start_date:
+        raise ValueError("start_date requires due_date (Graph rejects a start without a due date).")
+    return flag

@@ -149,3 +149,39 @@ async def test_extract_email_data_fenced_json_sampling() -> None:
     data = json.loads(result)
     assert data["sampling"] is True
     assert data["extraction"]["email_id"] == "msg-abc"
+
+
+@pytest.mark.asyncio
+async def test_extract_email_data_restores_pii_placeholders() -> None:
+    """The model reasons over anonymized text; extracted data must come back with real values."""
+    from outlook_mcp.pii.redactor import PseudonymMap
+
+    pii_map = PseudonymMap()
+    placeholder = pii_map.placeholder_for("PERSON", "Acme Industries")
+
+    model_output = json.dumps(
+        {
+            "email_id": "msg-abc",
+            "invoice_numbers": ["INV-2024-001"],
+            "amounts": ["$500"],
+            "dates": ["2024-03-01"],
+            "payment_reference": None,
+            "raw_notes": f"Invoice from {placeholder} for $500",
+        }
+    )
+    ctx = _make_ctx(model_output)
+    mock_client = AsyncMock()
+    mock_client.get_message = AsyncMock(return_value=_RAW_MESSAGE)
+
+    with (
+        patch("outlook_mcp.tools.email_extractor.make_graph_client", return_value=mock_client),
+        patch(
+            "outlook_mcp.tools.email_extractor.anonymize_email_json_if_enabled",
+            return_value=({"subject": "redacted"}, pii_map),
+        ),
+    ):
+        result = await extract_email_data("msg-abc", ctx)
+
+    notes = json.loads(result)["extraction"]["raw_notes"]
+    assert placeholder not in notes, "placeholder leaked into the extraction result"
+    assert "Acme Industries" in notes

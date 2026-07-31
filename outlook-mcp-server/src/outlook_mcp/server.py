@@ -283,6 +283,40 @@ def build_mcp() -> MCPServer:
         return await email_writer.set_email_priority(ctx, message_id, priority)
 
     @mcp.tool()
+    async def set_message_flag(
+        ctx: Context,
+        message_id: str,
+        status: str,
+        due_date: str | None = None,
+        start_date: str | None = None,
+        time_zone: str = "UTC",
+    ) -> str:
+        """Set the Outlook follow-up flag and optional reminder on a message.
+
+        ``status``: ``FLAGGED``, ``COMPLETE`` (Outlook "mark as complete"), or ``NOTFLAGGED``
+        (clear the flag). ``COMPLETE`` keeps a record of finished follow-up; ``NOTFLAGGED``
+        erases the flag — they are not interchangeable.
+
+        Dates accept ``YYYY-MM-DD`` (widened to 17:00, so a due date is not instantly overdue)
+        or ``YYYY-MM-DDTHH:MM:SS``. ``time_zone`` defaults to UTC — pass the user's zone to
+        avoid a due date landing hours off. Graph requires a start date whenever a due date is
+        given; it defaults to the due date.
+
+        Outlook's follow-up reminder is driven by the flag's due date; Graph messages have no
+        separate reminder field (that belongs to calendar events).
+
+        Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
+        """
+        return await email_writer.set_message_flag(
+            ctx,
+            message_id,
+            status,
+            due_date=due_date,
+            start_date=start_date,
+            time_zone=time_zone,
+        )
+
+    @mcp.tool()
     async def move_email(ctx: Context, message_id: str, destination_folder_id: str) -> str:
         """Move a message to a different mail folder (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite).
 
@@ -313,13 +347,20 @@ def build_mcp() -> MCPServer:
         )
 
     @mcp.tool()
-    async def create_reply_draft(ctx: Context, message_id: str, comment: str | None = None) -> str:
-        """Create a reply draft for a message, pre-populated with sender, subject (RE:), and quoted body.
+    async def create_reply_draft(
+        ctx: Context, message_id: str, comment: str | None = None, content_type: str = "Text"
+    ) -> str:
+        """Create a reply draft for a message (sender, RE: subject and quoted body pre-filled).
 
-        Optionally include ``comment`` to pre-fill the reply body text.
+        ``comment`` pre-fills the reply text. ``content_type``: ``Text`` (default) or ``HTML``
+        to send ``comment`` as markup, matching ``create_draft`` / ``send_email``. The quoted
+        original is preserved in both cases.
+
         Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
         """
-        return await email_writer.create_reply_draft(ctx, message_id, comment=comment)
+        return await email_writer.create_reply_draft(
+            ctx, message_id, comment=comment, content_type=content_type
+        )
 
     @mcp.tool()
     async def list_folders(ctx: Context, top: int = 100) -> str:

@@ -16,7 +16,7 @@ from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMis
 from outlook_mcp.config import get_settings
 from outlook_mcp.tools._common import make_graph_client, sanitize_client_error_message, tool_error_token
 from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_report_progress
-from outlook_mcp.tools.mail_query_params import graph_importance_for_patch
+from outlook_mcp.tools.mail_query_params import graph_flag_for_patch, graph_importance_for_patch
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
@@ -432,10 +432,17 @@ async def create_mail_folder(
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
-async def create_reply_draft(ctx: Context, message_id: str, comment: str | None = None) -> str:
+async def create_reply_draft(
+    ctx: Context,
+    message_id: str,
+    comment: str | None = None,
+    content_type: str = "Text",
+) -> str:
     """Create a reply draft for a message, pre-populated with sender, subject (RE:), and quoted body.
 
     Optionally include a ``comment`` (reply text) to pre-fill the draft body.
+    ``content_type``: ``Text`` (default) or ``HTML`` to send ``comment`` as markup — matching
+    ``create_draft`` and ``send_email``. The quoted original is preserved either way.
     Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
     """
     s = get_settings()
@@ -451,7 +458,7 @@ async def create_reply_draft(ctx: Context, message_id: str, comment: str | None 
 
     await tool_log_info(ctx, f"create_reply_draft: message_id={message_id!r}")
     try:
-        draft = await client.create_reply(message_id, comment=comment)
+        draft = await client.create_reply(message_id, comment=comment, content_type=content_type)
         return json.dumps({"ok": True, "message": draft}, indent=2)
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"create_reply_draft: http_error status={e.response.status_code}")
@@ -464,4 +471,70 @@ async def create_reply_draft(ctx: Context, message_id: str, comment: str | None 
         )
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"create_reply_draft: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+async def set_message_flag(
+    ctx: Context,
+    message_id: str,
+    status: str,
+    due_date: str | None = None,
+    start_date: str | None = None,
+    time_zone: str = "UTC",
+) -> str:
+    """Set the Outlook follow-up flag (Graph ``flag``) and optional reminder.
+
+    ``status``: ``FLAGGED``, ``COMPLETE`` (Outlook "mark as complete") or ``NOTFLAGGED``
+    (clear the flag). ``COMPLETE`` and ``NOTFLAGGED`` are different outcomes: the first keeps
+    a record of finished follow-up, the second erases the flag.
+
+    ``due_date`` / ``start_date``: ``YYYY-MM-DD`` (widened to 17:00) or a full
+    ``YYYY-MM-DDTHH:MM:SS``. ``time_zone`` is a Windows or IANA zone name; it defaults to UTC,
+    so pass the user's zone to avoid a due date landing hours off.
+
+    Graph's ``message`` resource has no reminder fields of its own (``isReminderOn`` and
+    ``reminderDateTime`` belong to calendar events). Outlook drives a follow-up reminder from
+    the flag's ``dueDateTime``, so setting a due date is what produces one.
+
+    Requires ENABLE_WRITE_OPERATIONS and Mail.ReadWrite.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable set_message_flag (requires Mail.ReadWrite).",
+            }
+        )
+
+    try:
+        flag = graph_flag_for_patch(status, due_date=due_date, start_date=start_date, time_zone=time_zone)
+    except ValueError as e:
+        return json.dumps({"error": "validation_error", "message": str(e)})
+
+    payload: dict[str, object] = {"flag": flag}
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"set_message_flag: message_id={message_id!r} status={flag['flagStatus']!r}")
+    await tool_report_progress(ctx, 20, 100, message="set_message_flag: start")
+    try:
+        await tool_report_progress(ctx, 60, 100, message="set_message_flag: calling Graph")
+        await client.update_message(message_id, payload)
+        await tool_report_progress(ctx, 100, 100, message="set_message_flag: complete")
+        return json.dumps({"ok": True, "message_id": message_id, "flag": flag})
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"set_message_flag: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"set_message_flag: network_error {type(e).__name__}")
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})

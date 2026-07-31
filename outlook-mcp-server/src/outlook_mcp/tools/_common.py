@@ -62,6 +62,7 @@ def graph_message_to_model(raw: dict[str, Any]) -> EmailMessage:
         has_attachments=raw.get("hasAttachments"),
         importance=raw.get("importance"),
         categories=list(raw.get("categories") or []),
+        flag=raw.get("flag"),
     )
 
 
@@ -106,6 +107,7 @@ def minimize_email_response(email_json: dict[str, Any]) -> dict[str, Any]:
         "is_read",
         "has_attachments",
         "importance",
+        "flag",
     )
     out: dict[str, Any] = {}
     for k in keys:

@@ -291,14 +291,41 @@ class GraphMailClient:
             r.raise_for_status()
             return r.json()
 
-    async def create_reply(self, message_id: str, comment: str | None = None) -> dict[str, Any]:
+    async def create_reply(
+        self,
+        message_id: str,
+        comment: str | None = None,
+        *,
+        content_type: str = "Text",
+    ) -> dict[str, Any]:
         """Create a reply draft for a message (pre-populated with sender, subject, quoted body).
+
+        ``content_type`` ``"HTML"`` makes ``comment`` render as markup. Graph offers no direct
+        way to do this: ``comment`` is always inserted as plain text, and supplying
+        ``message.body`` to ``createReply`` replaces the generated body and drops the quoted
+        original (confirmed on both v1.0 and beta). So HTML goes through create-then-PATCH.
 
         Returns the created draft message.
         """
         enc = _encode_message_id_for_path(message_id)
         base = self._user_prefix()
         async with self._client() as c:
+            if content_type.strip().lower() == "html" and comment:
+                # `comment` is inserted as plain text, and passing `message.body` to createReply
+                # replaces the generated body outright — losing the quoted original. Verified
+                # against Graph. So: create the reply, then PATCH our HTML *in front of* the
+                # quote Graph produced.
+                r = await c.post(f"{base}/messages/{enc}/createReply")
+                r.raise_for_status()
+                draft = r.json()
+                quoted = (draft.get("body") or {}).get("content") or ""
+                draft_enc = _encode_message_id_for_path(draft["id"])
+                p = await c.patch(
+                    f"{base}/messages/{draft_enc}",
+                    json={"body": {"contentType": "HTML", "content": f"{comment}{quoted}"}},
+                )
+                p.raise_for_status()
+                return p.json() if p.content else draft
             if comment:
                 r = await c.post(f"{base}/messages/{enc}/createReply", json={"comment": comment})
             else:

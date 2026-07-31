@@ -10,7 +10,7 @@ from mcp.types import SamplingMessage, TextContent
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
 from outlook_mcp.models.email import ExtractionResult
-from outlook_mcp.pii.redactor import redact_email_json_if_enabled
+from outlook_mcp.pii.redactor import anonymize_email_json_if_enabled, restore_text
 from outlook_mcp.tools._common import (
     email_json_for_tool_response,
     graph_message_to_model,
@@ -70,7 +70,7 @@ async def extract_email_data(message_id: str, ctx: Context) -> str:
         )
 
     safe_email_json = sanitize_email_json_for_prompt(email_json)
-    safe_email_json = redact_email_json_if_enabled(safe_email_json)
+    safe_email_json, pii_map = anonymize_email_json_if_enabled(safe_email_json)
     user_text = build_untrusted_email_user_text(message_id, safe_email_json)
 
     try:
@@ -90,6 +90,9 @@ async def extract_email_data(message_id: str, ctx: Context) -> str:
             temperature=0,
         )
         text = sampling_response_text(result)
+        # Extraction is meant to yield usable business data — a customer named "[PERSON_1]"
+        # is worthless downstream — so map placeholders back before parsing.
+        text = restore_text(text, pii_map)
         raw_obj = parse_json_object(text)
         if raw_obj.get("email_id") != message_id:
             msg = "sampling email_id does not match requested message_id"
