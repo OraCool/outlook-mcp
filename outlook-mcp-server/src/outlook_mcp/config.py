@@ -70,7 +70,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GRAPH_OAUTH_REDIRECT_URI", "graph_oauth_redirect_uri"),
     )
     graph_oauth_scopes: str = Field(
-        default="Mail.Read offline_access",
+        # No offline_access/openid/profile here: MSAL adds them and rejects them as input.
+        # They are still granted on the Entra ID app registration.
+        default="Mail.Read",
         validation_alias=AliasChoices("GRAPH_OAUTH_SCOPES", "graph_oauth_scopes"),
     )
     graph_oauth_token_cache_path: str | None = Field(
@@ -186,12 +188,25 @@ def get_settings() -> Settings:
     return Settings()
 
 
+# MSAL rejects these outright (``_decorate_scope``) and then adds them itself, so passing one
+# through is a hard ValueError while dropping it costs nothing — the refresh token still comes
+# back because MSAL unions the reserved set into every delegated request.
+_MSAL_RESERVED_SCOPES = frozenset({"openid", "profile", "offline_access"})
+
+
 def oauth_scope_list(settings: Settings) -> list[str]:
-    """Space-separated scopes from settings, plus Mail.Send and Mail.ReadWrite when writes are enabled."""
-    parts = [p for p in settings.graph_oauth_scopes.replace(",", " ").split() if p]
+    """Space-separated scopes from settings, plus Mail.Send and Mail.ReadWrite when writes are enabled.
+
+    Reserved OIDC scopes are stripped: MSAL supplies them and raises if a caller passes any.
+    """
+    parts = [
+        p
+        for p in settings.graph_oauth_scopes.replace(",", " ").split()
+        if p and p.lower() not in _MSAL_RESERVED_SCOPES
+    ]
     if settings.enable_write_operations:
         if "Mail.Send" not in parts:
             parts.append("Mail.Send")
         if "Mail.ReadWrite" not in parts:
             parts.append("Mail.ReadWrite")
-    return parts if parts else ["Mail.Read", "offline_access"]
+    return parts if parts else ["Mail.Read"]
