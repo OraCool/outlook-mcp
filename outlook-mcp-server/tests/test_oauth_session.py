@@ -110,3 +110,18 @@ def test_x_graph_token_precedence_over_oauth_session(monkeypatch: pytest.MonkeyP
 
     token, _ = resolve_delegated_graph_access_token(ctx)
     assert token == "from-header"
+
+
+def test_oauth_scope_list_strips_msal_reserved_scopes() -> None:
+    """MSAL raises ValueError on reserved scopes and adds them itself (see ``_decorate_scope``)."""
+    s = SimpleNamespace(
+        graph_oauth_scopes="Mail.Read offline_access openid profile",
+        enable_write_operations=False,
+    )
+    assert oauth_scope_list(s) == ["Mail.Read"]
+
+
+def test_oauth_scope_list_never_returns_only_reserved_scopes() -> None:
+    """Stripping must not leave an empty list, which would send MSAL a scope-less request."""
+    s = SimpleNamespace(graph_oauth_scopes="offline_access", enable_write_operations=False)
+    assert oauth_scope_list(s) == ["Mail.Read"]
