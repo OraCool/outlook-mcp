@@ -31,3 +31,5 @@ langgraph-mcp-tester/.venv/
 .mcp.json
 .playwright*
 ar-mail-management
+# Local MCP Inspector config (may contain Graph tokens)
+inspector-config.json

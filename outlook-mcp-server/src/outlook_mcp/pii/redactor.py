@@ -183,7 +183,7 @@ def _email_json_when_presidio_unavailable(
     if not _PRESIDIO_UNAVAILABLE_LOGGED:
         logger.warning(
             "PII redaction is enabled but Presidio is not available or failed to init; "
-            "install with: pip install 'outlook-multi-tenant-mcp[pii]' and spacy model en_core_web_sm"
+            "install with: pip install 'outlook-multi-tenant-mcp[pii]' and spacy model en_core_web_lg"
         )
         _PRESIDIO_UNAVAILABLE_LOGGED = True
     if not deterministic_fallback:
@@ -194,7 +194,7 @@ def _email_json_when_presidio_unavailable(
         logger.error(
             "PII_RESPONSE_LEVEL=redacted but Presidio is unavailable; tool response email "
             "payload used deterministic email/display-name masking. Use Python 3.12+, "
-            "pip install '.[pii]', and python -m spacy download en_core_web_sm for full Presidio redaction."
+            "pip install '.[pii]', and python -m spacy download en_core_web_lg for full Presidio redaction."
         )
         _DETERMINISTIC_RESPONSE_FALLBACK_LOGGED = True
     return out

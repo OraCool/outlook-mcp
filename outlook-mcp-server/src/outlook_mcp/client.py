@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import re
@@ -30,7 +31,12 @@ from outlook_mcp.config import Settings, get_settings
 if TYPE_CHECKING:
     from mcp.client.context import ClientRequestContext
 
-_DEV_CLIENT_INFO = Implementation(name="outlook-mcp-dev-client", version="0.3.0")
+try:
+    _VERSION = importlib.metadata.version("outlook-multi-tenant-mcp")
+except importlib.metadata.PackageNotFoundError:  # running from a source tree without an install
+    _VERSION = "0.0.0.dev0"
+
+_DEV_CLIENT_INFO = Implementation(name="outlook-mcp-dev-client", version=_VERSION)
 _BEARER = "bearer "
 
 
