@@ -52,6 +52,11 @@ def _encode_mail_folder_id_for_path(folder_id: str) -> str:
     return quote(folder_id.strip(), safe="")
 
 
+def _encode_attachment_id_for_path(attachment_id: str) -> str:
+    """Percent-encode a Graph ``attachment`` id for use in a URL path."""
+    return quote(attachment_id.strip(), safe="")
+
+
 class GraphMailClient:
     """Thin Graph REST wrapper using httpx (supports ``$search`` + ConsistencyLevel header).
 
@@ -81,6 +86,10 @@ class GraphMailClient:
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=GRAPH_BASE, headers=self._headers, timeout=self._http_timeout)
+
+    def _raw_client(self) -> httpx.AsyncClient:
+        """Client with no base URL or auth header, for PUTs to a pre-authorized upload-session URL."""
+        return httpx.AsyncClient(timeout=self._http_timeout)
 
     async def get_message(self, message_id: str, select: str | None = None) -> dict[str, Any]:
         params: dict[str, str] = {}
@@ -239,6 +248,122 @@ class GraphMailClient:
             r = await c.get(f"{base}/messages/{enc}/attachments")
             r.raise_for_status()
             return r.json()
+
+    async def add_attachment_small(
+        self,
+        message_id: str,
+        *,
+        name: str,
+        content_type: str,
+        content_b64: str,
+        is_inline: bool = False,
+    ) -> dict[str, Any]:
+        """POST /messages/{id}/attachments — small ``fileAttachment`` (<=3MB). Returns created metadata."""
+        enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
+        payload = {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": name,
+            "contentType": content_type,
+            "contentBytes": content_b64,
+            "isInline": is_inline,
+        }
+        async with self._client() as c:
+            r = await c.post(f"{base}/messages/{enc}/attachments", json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    async def create_upload_session(
+        self,
+        message_id: str,
+        *,
+        name: str,
+        content_type: str,
+        size: int,
+        is_inline: bool = False,
+    ) -> dict[str, Any]:
+        """POST /messages/{id}/attachments/createUploadSession. Returns session JSON (``uploadUrl``, ...)."""
+        enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
+        payload = {
+            "AttachmentItem": {
+                "attachmentType": "file",
+                "name": name,
+                "contentType": content_type,
+                "size": size,
+                "isInline": is_inline,
+            }
+        }
+        async with self._client() as c:
+            r = await c.post(f"{base}/messages/{enc}/attachments/createUploadSession", json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    async def upload_session_chunk(
+        self, upload_url: str, *, chunk: bytes, start: int, total_size: int
+    ) -> httpx.Response:
+        """PUT one Content-Range chunk to an upload session's ``uploadUrl`` (absolute, pre-authorized).
+
+        Returns the raw response so the caller can inspect 200/201 (final chunk, body has the
+        created attachment) vs 202 (more chunks expected).
+        """
+        end = start + len(chunk) - 1
+        headers = {
+            "Content-Length": str(len(chunk)),
+            "Content-Range": f"bytes {start}-{end}/{total_size}",
+        }
+        async with self._raw_client() as c:
+            return await c.put(upload_url, content=chunk, headers=headers)
+
+    async def upload_large_attachment(
+        self,
+        message_id: str,
+        *,
+        name: str,
+        content_type: str,
+        content_bytes: bytes,
+        is_inline: bool = False,
+        chunk_size: int = 4 * 320 * 1024,
+    ) -> dict[str, Any]:
+        """Orchestrate ``createUploadSession`` + sequential chunk PUTs. Returns the final attachment JSON."""
+        session = await self.create_upload_session(
+            message_id, name=name, content_type=content_type, size=len(content_bytes), is_inline=is_inline
+        )
+        upload_url = session["uploadUrl"]
+        total = len(content_bytes)
+        result: dict[str, Any] = {}
+        start = 0
+        while start < total:
+            end = min(start + chunk_size, total)
+            chunk = content_bytes[start:end]
+            r = await self.upload_session_chunk(upload_url, chunk=chunk, start=start, total_size=total)
+            r.raise_for_status()
+            if r.content:
+                body = r.json()
+                if isinstance(body, dict) and "id" in body:
+                    result = body
+            start = end
+        return result
+
+    async def get_attachment(self, message_id: str, attachment_id: str) -> dict[str, Any]:
+        """GET /messages/{id}/attachments/{attachmentId} — metadata (small files include contentBytes)."""
+        enc = _encode_message_id_for_path(message_id)
+        aenc = _encode_attachment_id_for_path(attachment_id)
+        base = self._user_prefix()
+        async with self._client() as c:
+            r = await c.get(f"{base}/messages/{enc}/attachments/{aenc}")
+            r.raise_for_status()
+            return r.json()
+
+    async def get_attachment_raw_bytes(self, message_id: str, attachment_id: str) -> tuple[bytes, str | None]:
+        """GET /messages/{id}/attachments/{attachmentId}/$value — raw bytes, works for any size."""
+        enc = _encode_message_id_for_path(message_id)
+        aenc = _encode_attachment_id_for_path(attachment_id)
+        base = self._user_prefix()
+        async with self._client() as c:
+            r = await c.get(f"{base}/messages/{enc}/attachments/{aenc}/$value")
+            r.raise_for_status()
+            return r.content, r.headers.get("content-type")
 
     async def list_master_categories(self, top: int = 500) -> dict[str, Any]:
         """Outlook master categories (display name, color); requires ``MailboxSettings.Read``.

@@ -814,3 +814,171 @@ async def test_list_folders_network_error_logs_warning() -> None:
     # elicitation calls use level "warning" for operational issues
     levels = [c.args[0] for c in ctx.log.call_args_list if c.args]
     assert "warning" in levels
+
+
+class _AttachmentSettings:
+    max_multimodal_attachment_bytes = 8 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_image_returns_image_content() -> None:
+    from mcp.types import ImageContent, TextContent
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "photo.png",
+            "contentType": "image/png",
+            "size": 8,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"\x89PNG\r\n\x1a\n", "image/png"))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-1", ctx=None)
+
+    assert any(isinstance(b, TextContent) for b in result)
+    image_blocks = [b for b in result if isinstance(b, ImageContent)]
+    assert len(image_blocks) == 1
+    assert image_blocks[0].mime_type == "image/png"
+    import base64 as _b64
+
+    assert _b64.b64decode(image_blocks[0].data) == b"\x89PNG\r\n\x1a\n"
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_pdf_returns_embedded_resource() -> None:
+    from mcp.types import BlobResourceContents, EmbeddedResource
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-2",
+            "name": "invoice.pdf",
+            "contentType": "application/pdf",
+            "size": 4,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"%PDF", "application/pdf"))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-2", ctx=None)
+
+    resource_blocks = [b for b in result if isinstance(b, EmbeddedResource)]
+    assert len(resource_blocks) == 1
+    resource = resource_blocks[0].resource
+    assert isinstance(resource, BlobResourceContents)
+    assert resource.mime_type == "application/pdf"
+    import base64 as _b64
+
+    assert _b64.b64decode(resource.blob) == b"%PDF"
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_oversized_returns_metadata_only() -> None:
+    from mcp.types import TextContent
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    class _TinyLimitSettings:
+        max_multimodal_attachment_bytes = 1
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-3",
+            "name": "big.pdf",
+            "contentType": "application/pdf",
+            "size": 999,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"x" * 999, "application/pdf"))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_TinyLimitSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-3", ctx=None)
+
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    data = json.loads(result[0].text)
+    assert data["error"] == "attachment_too_large_for_inline"
+    mock_client.get_attachment_raw_bytes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_unsupported_type() -> None:
+    from mcp.types import TextContent
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={"@odata.type": "#microsoft.graph.itemAttachment", "id": "att-4", "name": "nested.eml"}
+    )
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-4", ctx=None)
+
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    data = json.loads(result[0].text)
+    assert data["error"] == "unsupported_attachment_type"
+    mock_client.get_attachment_raw_bytes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_http_error() -> None:
+    from mcp.types import TextContent
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    mock_client = AsyncMock()
+    resp = MagicMock(status_code=404, text="not found")
+    mock_client.get_attachment = AsyncMock(side_effect=httpx.HTTPStatusError("404", request=MagicMock(), response=resp))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-5", ctx=None)
+
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    data = json.loads(result[0].text)
+    assert data["error"] == "http_error"
+    assert data["status_code"] == 404
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_token_missing() -> None:
+    from mcp.types import TextContent
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch(
+            "outlook_mcp.tools.email_reader.make_graph_client",
+            side_effect=GraphTokenMissingError("no token"),
+        ),
+    ):
+        result = await get_attachment_content("msg-1", "att-6", ctx=None)
+
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    data = json.loads(result[0].text)
+    assert data["error"] == "missing_token"

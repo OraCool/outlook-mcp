@@ -21,13 +21,19 @@ from outlook_mcp.tools.email_writer import (
     set_message_categories,
 )
 
+_SMALL_ATTACHMENT = {"filename": "a.txt", "content_type": "text/plain", "content_base64": "aGVsbG8="}
+
 
 class _SettingsDisabled:
     enable_write_operations = False
+    max_attachment_count = 10
+    max_attachment_upload_bytes = 150 * 1024 * 1024
 
 
 class _SettingsEnabled:
     enable_write_operations = True
+    max_attachment_count = 10
+    max_attachment_upload_bytes = 150 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -485,3 +491,201 @@ async def test_graph_client_html_reply_preserves_the_quoted_original() -> None:
     sent = http.patch.await_args.kwargs["json"]["body"]
     assert sent["contentType"] == "HTML"
     assert sent["content"] == "<p>Hi</p>" + quoted
+
+
+@pytest.mark.asyncio
+async def test_send_email_with_small_attachment_inline() -> None:
+    mock_client = AsyncMock()
+    mock_client.send_mail = AsyncMock(return_value=None)
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await send_email(
+            ctx=None,
+            subject="S",
+            body_text="B",
+            to_addresses=["a@b.com"],
+            attachments=[_SMALL_ATTACHMENT],
+        )
+    data = json.loads(result)
+    assert data["ok"] is True
+    payload = mock_client.send_mail.call_args[0][0]
+    assert payload["message"]["attachments"] == [
+        {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": "a.txt",
+            "contentType": "text/plain",
+            "contentBytes": "aGVsbG8=",
+            "isInline": False,
+        }
+    ]
+    mock_client.create_message_draft.assert_not_awaited()
+    mock_client.send_draft.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_email_with_large_attachment_uses_draft_path() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_message_draft = AsyncMock(return_value={"id": "draft-1"})
+    mock_client.upload_large_attachment = AsyncMock(return_value={"id": "att-1", "name": "a.txt"})
+    mock_client.send_draft = AsyncMock(return_value=None)
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+        patch("outlook_mcp.tools._attachments.SMALL_ATTACHMENT_THRESHOLD_BYTES", 1),
+    ):
+        result = await send_email(
+            ctx=None,
+            subject="S",
+            body_text="B",
+            to_addresses=["a@b.com"],
+            attachments=[_SMALL_ATTACHMENT],
+        )
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["used_draft_path"] is True
+    mock_client.create_message_draft.assert_awaited_once()
+    mock_client.upload_large_attachment.assert_awaited_once()
+    mock_client.send_draft.assert_awaited_once_with("draft-1")
+    mock_client.send_mail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_email_attachment_oversized_rejected() -> None:
+    class _SettingsTinyLimit(_SettingsEnabled):
+        max_attachment_upload_bytes = 1
+
+    mock_client = AsyncMock()
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsTinyLimit()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await send_email(
+            ctx=None, subject="S", body_text="B", to_addresses=["a@b.com"], attachments=[_SMALL_ATTACHMENT]
+        )
+    data = json.loads(result)
+    assert data["error"] == "validation_error"
+    mock_client.send_mail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_email_attachment_count_exceeded() -> None:
+    class _SettingsTinyCount(_SettingsEnabled):
+        max_attachment_count = 1
+
+    mock_client = AsyncMock()
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsTinyCount()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await send_email(
+            ctx=None,
+            subject="S",
+            body_text="B",
+            to_addresses=["a@b.com"],
+            attachments=[_SMALL_ATTACHMENT, _SMALL_ATTACHMENT],
+        )
+    data = json.loads(result)
+    assert data["error"] == "validation_error"
+    mock_client.send_mail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_email_attachment_bad_base64() -> None:
+    mock_client = AsyncMock()
+    bad = {"filename": "a.txt", "content_base64": "not-valid-base64!!"}
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await send_email(
+            ctx=None, subject="S", body_text="B", to_addresses=["a@b.com"], attachments=[bad]
+        )
+    data = json.loads(result)
+    assert data["error"] == "validation_error"
+    mock_client.send_mail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_draft_with_attachment_small() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_message_draft = AsyncMock(return_value={"id": "draft-1"})
+    mock_client.add_attachment_small = AsyncMock(return_value={"id": "att-1", "name": "a.txt", "size": 5})
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await create_draft(ctx=None, subject="S", body_text="B", attachments=[_SMALL_ATTACHMENT])
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5}]
+    mock_client.create_message_draft.assert_awaited_once()
+    mock_client.add_attachment_small.assert_awaited_once_with(
+        "draft-1", name="a.txt", content_type="text/plain", content_b64="aGVsbG8=", is_inline=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_draft_with_attachment_large() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_message_draft = AsyncMock(return_value={"id": "draft-1"})
+    mock_client.upload_large_attachment = AsyncMock(return_value={"id": "att-1", "name": "a.txt"})
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+        patch("outlook_mcp.tools._attachments.SMALL_ATTACHMENT_THRESHOLD_BYTES", 1),
+    ):
+        result = await create_draft(ctx=None, subject="S", body_text="B", attachments=[_SMALL_ATTACHMENT])
+    data = json.loads(result)
+    assert data["ok"] is True
+    mock_client.upload_large_attachment.assert_awaited_once()
+    mock_client.add_attachment_small.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_reply_draft_with_attachment() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_reply = AsyncMock(return_value={"id": "draft-1"})
+    mock_client.add_attachment_small = AsyncMock(return_value={"id": "att-1", "name": "a.txt", "size": 5})
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await create_reply_draft(ctx=None, message_id="orig", attachments=[_SMALL_ATTACHMENT])
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5}]
+    mock_client.create_reply.assert_awaited_once_with("orig", comment=None, content_type="Text")
+    mock_client.add_attachment_small.assert_awaited_once_with(
+        "draft-1", name="a.txt", content_type="text/plain", content_b64="aGVsbG8=", is_inline=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_draft_attachments_write_disabled() -> None:
+    mock_client = AsyncMock()
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsDisabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await create_draft(ctx=None, subject="S", body_text="B", attachments=[_SMALL_ATTACHMENT])
+    data = json.loads(result)
+    assert data["error"] == "write_disabled"
+    mock_client.create_message_draft.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_draft_attachment_http_error_surfaces_draft_id() -> None:
+    mock_client = AsyncMock()
+    mock_client.create_message_draft = AsyncMock(return_value={"id": "draft-1"})
+    resp = MagicMock(status_code=500, text="boom")
+    mock_client.add_attachment_small = AsyncMock(side_effect=httpx.HTTPStatusError("boom", request=MagicMock(), response=resp))
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await create_draft(ctx=None, subject="S", body_text="B", attachments=[_SMALL_ATTACHMENT])
+    data = json.loads(result)
+    assert data["error"] == "http_error"
+    assert data["draft_id"] == "draft-1"
