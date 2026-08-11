@@ -21,6 +21,13 @@ if TYPE_CHECKING:
 # (``sendMail`` / ``POST /messages``). Above this, an upload session is required.
 SMALL_ATTACHMENT_THRESHOLD_BYTES = 3 * 1024 * 1024
 
+# Metadata-only $select for listing attachments. Deliberately excludes contentBytes: Graph's
+# default /attachments response inlines full base64 content for every fileAttachment, which for
+# a handful of photos can be tens of megabytes of text in one tool response — large enough to
+# break an MCP client's stdio session outright (observed in production: a 5-attachment email
+# disconnected the client every time get_attachments was called).
+ATTACHMENT_LIST_SELECT = "id,name,contentType,size,isInline,lastModifiedDateTime,contentId"
+
 
 class AttachmentInput(BaseModel):
     """Validated shape of one entry in a tool's ``attachments`` argument.
@@ -129,6 +136,23 @@ def build_inline_small_attachments_payload(attachments: list[AttachmentInput]) -
             }
         )
     return result
+
+
+def strip_content_bytes_from_attachments_list(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove ``contentBytes`` from each item in a Graph ``/attachments`` list response.
+
+    Defensive backstop for ``get_attachments``: even with ``ATTACHMENT_LIST_SELECT`` requested,
+    nothing guarantees every Graph tenant/version actually honors ``$select`` and omits
+    ``contentBytes`` — dropping it here regardless is the only way to guarantee the metadata-only
+    contract regardless of Graph's behavior.
+    """
+    values = data.get("value")
+    if not isinstance(values, list):
+        return data
+    return {
+        **data,
+        "value": [{k: v for k, v in item.items() if k != "contentBytes"} for item in values],
+    }
 
 
 def minimal_attachment_result(result: dict[str, Any]) -> dict[str, Any]:

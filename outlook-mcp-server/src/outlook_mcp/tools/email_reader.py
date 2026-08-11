@@ -12,7 +12,11 @@ from mcp.types import BlobResourceContents, ContentBlock, EmbeddedResource, Imag
 from outlook_mcp.auth.graph_client import MailFolderAmbiguousError, MailFolderNotFoundError
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
-from outlook_mcp.tools._attachments import guess_content_type
+from outlook_mcp.tools._attachments import (
+    ATTACHMENT_LIST_SELECT,
+    guess_content_type,
+    strip_content_bytes_from_attachments_list,
+)
 from outlook_mcp.tools._common import (
     email_json_for_tool_response,
     graph_message_to_model,
@@ -368,7 +372,8 @@ async def get_attachments(message_id: str, ctx: Context) -> str:
     await tool_report_progress(ctx, 10, 100, message="get_attachments: start")
     try:
         await tool_report_progress(ctx, 40, 100, message="get_attachments: calling Graph")
-        data = await client.list_attachments(message_id)
+        data = await client.list_attachments(message_id, select=ATTACHMENT_LIST_SELECT)
+        data = strip_content_bytes_from_attachments_list(data)
         await tool_report_progress(ctx, 100, 100, message="get_attachments: complete")
         return json.dumps(data, indent=2)
     except httpx.HTTPStatusError as e:

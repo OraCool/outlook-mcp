@@ -241,11 +241,12 @@ class GraphMailClient:
         body["value"] = values[skip : skip + top]
         return body
 
-    async def list_attachments(self, message_id: str) -> dict[str, Any]:
+    async def list_attachments(self, message_id: str, *, select: str | None = None) -> dict[str, Any]:
         enc = _encode_message_id_for_path(message_id)
         base = self._user_prefix()
+        params = {"$select": select} if select else None
         async with self._client() as c:
-            r = await c.get(f"{base}/messages/{enc}/attachments")
+            r = await c.get(f"{base}/messages/{enc}/attachments", params=params)
             r.raise_for_status()
             return r.json()
 
