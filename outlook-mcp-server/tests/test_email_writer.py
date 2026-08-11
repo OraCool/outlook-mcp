@@ -611,7 +611,9 @@ async def test_send_email_attachment_bad_base64() -> None:
 async def test_create_draft_with_attachment_small() -> None:
     mock_client = AsyncMock()
     mock_client.create_message_draft = AsyncMock(return_value={"id": "draft-1"})
-    mock_client.add_attachment_small = AsyncMock(return_value={"id": "att-1", "name": "a.txt", "size": 5})
+    mock_client.add_attachment_small = AsyncMock(
+        return_value={"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}
+    )
     with (
         patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
         patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
@@ -619,7 +621,7 @@ async def test_create_draft_with_attachment_small() -> None:
         result = await create_draft(ctx=None, subject="S", body_text="B", attachments=[_SMALL_ATTACHMENT])
     data = json.loads(result)
     assert data["ok"] is True
-    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5}]
+    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}]
     mock_client.create_message_draft.assert_awaited_once()
     mock_client.add_attachment_small.assert_awaited_once_with(
         "draft-1", name="a.txt", content_type="text/plain", content_b64="aGVsbG8=", is_inline=False
@@ -647,7 +649,9 @@ async def test_create_draft_with_attachment_large() -> None:
 async def test_create_reply_draft_with_attachment() -> None:
     mock_client = AsyncMock()
     mock_client.create_reply = AsyncMock(return_value={"id": "draft-1"})
-    mock_client.add_attachment_small = AsyncMock(return_value={"id": "att-1", "name": "a.txt", "size": 5})
+    mock_client.add_attachment_small = AsyncMock(
+        return_value={"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}
+    )
     with (
         patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
         patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
@@ -655,7 +659,7 @@ async def test_create_reply_draft_with_attachment() -> None:
         result = await create_reply_draft(ctx=None, message_id="orig", attachments=[_SMALL_ATTACHMENT])
     data = json.loads(result)
     assert data["ok"] is True
-    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5}]
+    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}]
     mock_client.create_reply.assert_awaited_once_with("orig", comment=None, content_type="Text")
     mock_client.add_attachment_small.assert_awaited_once_with(
         "draft-1", name="a.txt", content_type="text/plain", content_b64="aGVsbG8=", is_inline=False
@@ -701,7 +705,7 @@ async def test_create_draft_with_file_path_attachment(tmp_path) -> None:
     mock_client = AsyncMock()
     mock_client.create_message_draft = AsyncMock(return_value={"id": "draft-1"})
     mock_client.add_attachment_small = AsyncMock(
-        return_value={"id": "att-1", "name": "invoice.pdf", "size": len(content)}
+        return_value={"id": "att-1", "name": "invoice.pdf", "size": len(content), "contentType": "application/pdf"}
     )
     with (
         patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
@@ -712,7 +716,9 @@ async def test_create_draft_with_file_path_attachment(tmp_path) -> None:
         )
     data = json.loads(result)
     assert data["ok"] is True
-    assert data["attachments"] == [{"id": "att-1", "name": "invoice.pdf", "size": len(content)}]
+    assert data["attachments"] == [
+        {"id": "att-1", "name": "invoice.pdf", "size": len(content), "contentType": "application/pdf"}
+    ]
     mock_client.add_attachment_small.assert_awaited_once_with(
         "draft-1",
         name="invoice.pdf",

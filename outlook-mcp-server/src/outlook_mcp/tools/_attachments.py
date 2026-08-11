@@ -131,6 +131,21 @@ def build_inline_small_attachments_payload(attachments: list[AttachmentInput]) -
     return result
 
 
+def minimal_attachment_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Strip a Graph attachment response down to fields worth returning to the caller.
+
+    Graph's create-attachment response echoes back the full resource, including
+    ``contentBytes`` — the same base64 payload the caller just sent — which would otherwise
+    bloat the tool response by the attachment's entire encoded size for no benefit.
+    """
+    return {
+        "id": result.get("id"),
+        "name": result.get("name"),
+        "size": result.get("size"),
+        "contentType": result.get("contentType"),
+    }
+
+
 async def attach_files_to_message(
     client: GraphMailClient, message_id: str, attachments: list[AttachmentInput]
 ) -> list[dict[str, Any]]:
@@ -156,5 +171,5 @@ async def attach_files_to_message(
                 content_bytes=decoded,
                 is_inline=a.is_inline,
             )
-        results.append(result)
+        results.append(minimal_attachment_result(result))
     return results

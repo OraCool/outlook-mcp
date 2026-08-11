@@ -14,6 +14,7 @@ from outlook_mcp.tools._attachments import (
     decode_attachment_base64,
     guess_content_type,
     has_large_attachment,
+    minimal_attachment_result,
     parse_attachment_inputs,
     read_attachment_file_bytes,
     resolve_attachment_bytes,
@@ -207,14 +208,14 @@ async def test_attach_files_to_message_routes_file_path_small_file(tmp_path) -> 
 
     class FakeClient:
         async def add_attachment_small(self, message_id, *, name, content_type, content_b64, is_inline=False):
-            return {"id": "att-1", "name": name, "size": len(base64.b64decode(content_b64))}
+            return {"id": "att-1", "name": name, "size": len(base64.b64decode(content_b64)), "contentType": content_type}
 
         async def upload_large_attachment(self, *args, **kwargs):
             raise AssertionError("should not be called for a small file")
 
     attachments = [AttachmentInput(file_path=str(f), content_type="text/plain")]
     results = await attach_files_to_message(FakeClient(), "msg-1", attachments)
-    assert results == [{"id": "att-1", "name": "a.txt", "size": 5}]
+    assert results == [{"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}]
 
 
 def test_has_large_attachment_false_for_small_only() -> None:
@@ -231,6 +232,49 @@ def test_has_large_attachment_true_when_one_exceeds_threshold() -> None:
     assert has_large_attachment(attachments) is True
 
 
+def test_minimal_attachment_result_strips_content_bytes() -> None:
+    graph_response = {
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        "id": "att-1",
+        "name": "invoice.pdf",
+        "contentType": "application/pdf",
+        "size": 95000,
+        "isInline": False,
+        "lastModifiedDateTime": "2026-01-01T00:00:00Z",
+        "contentBytes": "A" * 95000,
+    }
+    assert minimal_attachment_result(graph_response) == {
+        "id": "att-1",
+        "name": "invoice.pdf",
+        "size": 95000,
+        "contentType": "application/pdf",
+    }
+
+
+@pytest.mark.asyncio
+async def test_attach_files_to_message_strips_content_bytes_from_result() -> None:
+    class FakeClient:
+        async def add_attachment_small(self, message_id, *, name, content_type, content_b64, is_inline=False):
+            return {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "att-1",
+                "name": name,
+                "contentType": content_type,
+                "size": len(base64.b64decode(content_b64)),
+                "isInline": is_inline,
+                "lastModifiedDateTime": "2026-01-01T00:00:00Z",
+                "contentBytes": content_b64,
+            }
+
+        async def upload_large_attachment(self, *args, **kwargs):
+            raise AssertionError("should not be called for a small file")
+
+    attachments = [AttachmentInput(filename="a.txt", content_type="text/plain", content_base64="aGVsbG8=")]
+    results = await attach_files_to_message(FakeClient(), "msg-1", attachments)
+    assert results == [{"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}]
+    assert "contentBytes" not in results[0]
+
+
 @pytest.mark.asyncio
 async def test_attach_files_to_message_routes_small_file_to_add_attachment_small() -> None:
     class FakeClient:
@@ -242,7 +286,7 @@ async def test_attach_files_to_message_routes_small_file_to_add_attachment_small
             self.small_calls.append(
                 {"message_id": message_id, "name": name, "content_type": content_type, "is_inline": is_inline}
             )
-            return {"id": "att-1", "name": name, "size": len(base64.b64decode(content_b64))}
+            return {"id": "att-1", "name": name, "size": len(base64.b64decode(content_b64)), "contentType": content_type}
 
         async def upload_large_attachment(self, *args, **kwargs):
             self.large_calls.append(kwargs)
@@ -251,7 +295,7 @@ async def test_attach_files_to_message_routes_small_file_to_add_attachment_small
     client = FakeClient()
     attachments = [AttachmentInput(filename="a.txt", content_type="text/plain", content_base64="aGVsbG8=")]
     results = await attach_files_to_message(client, "msg-1", attachments)
-    assert results == [{"id": "att-1", "name": "a.txt", "size": 5}]
+    assert results == [{"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}]
     assert client.small_calls == [
         {"message_id": "msg-1", "name": "a.txt", "content_type": "text/plain", "is_inline": False}
     ]
@@ -271,12 +315,19 @@ async def test_attach_files_to_message_routes_large_file_to_upload_large_attachm
 
         async def upload_large_attachment(self, message_id, *, name, content_type, content_bytes, is_inline=False):
             self.large_calls.append({"message_id": message_id, "name": name, "content_type": content_type})
-            return {"id": "att-2", "name": name, "size": len(content_bytes)}
+            return {"id": "att-2", "name": name, "size": len(content_bytes), "contentType": content_type}
 
     client = FakeClient()
     attachments = [AttachmentInput(filename="big.bin", content_type="application/octet-stream", content_base64=big_b64)]
     results = await attach_files_to_message(client, "msg-1", attachments)
-    assert results == [{"id": "att-2", "name": "big.bin", "size": SMALL_ATTACHMENT_THRESHOLD_BYTES + 1}]
+    assert results == [
+        {
+            "id": "att-2",
+            "name": "big.bin",
+            "size": SMALL_ATTACHMENT_THRESHOLD_BYTES + 1,
+            "contentType": "application/octet-stream",
+        }
+    ]
     assert client.large_calls == [
         {"message_id": "msg-1", "name": "big.bin", "content_type": "application/octet-stream"}
     ]
