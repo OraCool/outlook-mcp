@@ -295,7 +295,7 @@ def build_mcp() -> MCPServer:
         "content_base64": str | None, "file_path": str | None, "is_inline": bool}`` — exactly
         one of ``content_base64``/``file_path`` per entry; prefer ``file_path`` for anything but
         tiny files (see ``send_email`` for why). Response includes an ``attachments`` list
-        (id/name/size) for what was attached.
+        (id/name/size/contentType) for what was attached.
         """
         return await email_writer.create_draft(
             ctx,

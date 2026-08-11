@@ -260,7 +260,7 @@ async def create_draft(
     Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
     "content_type": str | None, "is_inline": bool}``. Each file is attached after the draft is
     created, using Graph's small-file path (<=3MB) or a chunked upload session for larger files.
-    The response includes an ``attachments`` list (id/name/size) for what was attached.
+    The response includes an ``attachments`` list (id/name/size/contentType) for what was attached.
     """
     s = get_settings()
     if not s.enable_write_operations:
@@ -553,7 +553,7 @@ async def create_reply_draft(
     ``content_type``: ``Text`` (default) or ``HTML`` to send ``comment`` as markup — matching
     ``create_draft`` and ``send_email``. The quoted original is preserved either way.
     Optional ``attachments``: same shape as ``create_draft`` — attached after the reply draft
-    is created; the response includes an ``attachments`` list (id/name/size).
+    is created; the response includes an ``attachments`` list (id/name/size/contentType).
     Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
     """
     s = get_settings()
