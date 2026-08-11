@@ -126,3 +126,26 @@ async def test_get_attachment_raw_bytes_returns_bytes_and_content_type() -> None
     assert content == b"\x89PNG..."
     assert content_type == "image/png"
     assert http.get.await_args.args == ("/me/messages/msg-1/attachments/att-1/$value",)
+
+
+@pytest.mark.asyncio
+async def test_list_attachments_passes_select_param() -> None:
+    got = _response(json_body={"value": [{"id": "att-1", "name": "a.txt"}]})
+    http = _fake_http(get=got)
+    client = GraphMailClient("tok")
+    with patch.object(GraphMailClient, "_client", return_value=http):
+        await client.list_attachments("msg-1", select="id,name,contentType,size")
+    args, kwargs = http.get.await_args.args, http.get.await_args.kwargs
+    assert args == ("/me/messages/msg-1/attachments",)
+    assert kwargs["params"] == {"$select": "id,name,contentType,size"}
+
+
+@pytest.mark.asyncio
+async def test_list_attachments_without_select_omits_param() -> None:
+    got = _response(json_body={"value": []})
+    http = _fake_http(get=got)
+    client = GraphMailClient("tok")
+    with patch.object(GraphMailClient, "_client", return_value=http):
+        await client.list_attachments("msg-1")
+    kwargs = http.get.await_args.kwargs
+    assert kwargs.get("params") is None

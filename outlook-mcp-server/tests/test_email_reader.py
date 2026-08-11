@@ -982,3 +982,42 @@ async def test_get_attachment_content_token_missing() -> None:
     assert isinstance(result[0], TextContent)
     data = json.loads(result[0].text)
     assert data["error"] == "missing_token"
+
+
+@pytest.mark.asyncio
+async def test_get_attachments_requests_metadata_only_select() -> None:
+    from outlook_mcp.tools._attachments import ATTACHMENT_LIST_SELECT
+    from outlook_mcp.tools.email_reader import get_attachments
+
+    mock_client = AsyncMock()
+    mock_client.list_attachments = AsyncMock(return_value={"value": []})
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        await get_attachments("msg-1", ctx=None)
+    mock_client.list_attachments.assert_awaited_once_with("msg-1", select=ATTACHMENT_LIST_SELECT)
+
+
+@pytest.mark.asyncio
+async def test_get_attachments_strips_content_bytes_defensively() -> None:
+    from outlook_mcp.tools.email_reader import get_attachments
+
+    mock_client = AsyncMock()
+    mock_client.list_attachments = AsyncMock(
+        return_value={
+            "value": [
+                {
+                    "id": "att-1",
+                    "name": "IMG_2291.HEIC",
+                    "contentType": "image/heic",
+                    "size": 2400000,
+                    "contentBytes": "A" * 3200000,
+                }
+            ]
+        }
+    )
+    with patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client):
+        result = await get_attachments("msg-1", ctx=None)
+    data = json.loads(result)
+    assert data["value"] == [
+        {"id": "att-1", "name": "IMG_2291.HEIC", "contentType": "image/heic", "size": 2400000}
+    ]
+    assert "contentBytes" not in json.dumps(data)

@@ -148,9 +148,10 @@ def build_mcp() -> MCPServer:
 
     @mcp.tool()
     async def get_attachments(message_id: str, ctx: Context) -> str:
-        """List attachment metadata for a message.
+        """List attachment metadata for a message (id, name, contentType, size — never file bytes).
 
-        Use ``get_attachment_content`` to download a specific attachment's bytes.
+        Use ``get_attachment_content`` with an ``id`` from this list to download a specific
+        attachment's bytes.
         """
         return await email_reader.get_attachments(message_id, ctx)
 

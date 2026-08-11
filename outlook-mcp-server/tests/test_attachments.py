@@ -7,6 +7,7 @@ import base64
 import pytest
 
 from outlook_mcp.tools._attachments import (
+    ATTACHMENT_LIST_SELECT,
     SMALL_ATTACHMENT_THRESHOLD_BYTES,
     AttachmentInput,
     attach_files_to_message,
@@ -18,6 +19,7 @@ from outlook_mcp.tools._attachments import (
     parse_attachment_inputs,
     read_attachment_file_bytes,
     resolve_attachment_bytes,
+    strip_content_bytes_from_attachments_list,
     validate_attachment_limits,
 )
 
@@ -331,3 +333,32 @@ async def test_attach_files_to_message_routes_large_file_to_upload_large_attachm
     assert client.large_calls == [
         {"message_id": "msg-1", "name": "big.bin", "content_type": "application/octet-stream"}
     ]
+
+
+def test_strip_content_bytes_from_attachments_list_removes_content_bytes() -> None:
+    data = {
+        "value": [
+            {"id": "att-1", "name": "photo.heic", "contentType": "image/heic", "size": 3000000, "contentBytes": "A" * 4000000},
+            {"id": "att-2", "name": "receipt.pdf", "contentType": "application/pdf", "size": 38000, "contentBytes": "B" * 50000},
+        ]
+    }
+    stripped = strip_content_bytes_from_attachments_list(data)
+    assert stripped["value"] == [
+        {"id": "att-1", "name": "photo.heic", "contentType": "image/heic", "size": 3000000},
+        {"id": "att-2", "name": "receipt.pdf", "contentType": "application/pdf", "size": 38000},
+    ]
+
+
+def test_strip_content_bytes_from_attachments_list_handles_missing_value_key() -> None:
+    assert strip_content_bytes_from_attachments_list({}) == {}
+
+
+def test_strip_content_bytes_from_attachments_list_handles_items_without_content_bytes() -> None:
+    data = {"value": [{"id": "att-1", "name": "a.txt"}]}
+    assert strip_content_bytes_from_attachments_list(data) == data
+
+
+def test_attachment_list_select_excludes_content_bytes() -> None:
+    assert "contentBytes" not in ATTACHMENT_LIST_SELECT.split(",")
+    assert "id" in ATTACHMENT_LIST_SELECT.split(",")
+    assert "size" in ATTACHMENT_LIST_SELECT.split(",")
