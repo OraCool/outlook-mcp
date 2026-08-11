@@ -362,3 +362,12 @@ def test_attachment_list_select_excludes_content_bytes() -> None:
     assert "contentBytes" not in ATTACHMENT_LIST_SELECT.split(",")
     assert "id" in ATTACHMENT_LIST_SELECT.split(",")
     assert "size" in ATTACHMENT_LIST_SELECT.split(",")
+
+
+def test_attachment_list_select_excludes_content_id() -> None:
+    # Graph rejects $select on /messages/{id}/attachments when it includes contentId
+    # (400 Bad Request) — contentId isn't a selectable property on the base Attachment
+    # entity type, only on the fileAttachment subtype, and Graph doesn't support selecting
+    # derived-type-only properties on this polymorphic collection. Confirmed against a real
+    # mailbox: every other field in ATTACHMENT_LIST_SELECT works; contentId alone 400s.
+    assert "contentId" not in ATTACHMENT_LIST_SELECT.split(",")

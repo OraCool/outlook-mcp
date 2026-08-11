@@ -26,7 +26,11 @@ SMALL_ATTACHMENT_THRESHOLD_BYTES = 3 * 1024 * 1024
 # a handful of photos can be tens of megabytes of text in one tool response — large enough to
 # break an MCP client's stdio session outright (observed in production: a 5-attachment email
 # disconnected the client every time get_attachments was called).
-ATTACHMENT_LIST_SELECT = "id,name,contentType,size,isInline,lastModifiedDateTime,contentId"
+# Note: contentId is deliberately excluded — Graph rejects $select on
+# /messages/{id}/attachments with 400 Bad Request when contentId is included (confirmed against
+# a live mailbox). It's only a property of the fileAttachment subtype, not the base Attachment
+# entity, and Graph doesn't support selecting derived-type-only properties on this collection.
+ATTACHMENT_LIST_SELECT = "id,name,contentType,size,isInline,lastModifiedDateTime"
 
 
 class AttachmentInput(BaseModel):
