@@ -7,13 +7,20 @@ unless this process should call Graph send/category APIs directly.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from outlook_mcp.auth.graph_client import MailFolderAmbiguousError, MailFolderNotFoundError
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
+from outlook_mcp.tools._attachments import (
+    attach_files_to_message,
+    build_inline_small_attachments_payload,
+    has_large_attachment,
+    parse_attachment_inputs,
+    validate_attachment_limits,
+)
 from outlook_mcp.tools._common import make_graph_client, sanitize_client_error_message, tool_error_token
 from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_report_progress
 from outlook_mcp.tools.mail_query_params import graph_flag_for_patch, graph_importance_for_patch
@@ -82,6 +89,19 @@ async def set_message_categories(ctx: Context, message_id: str, categories: list
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
+def _parse_and_validate_attachments(attachments: list[dict] | None, s: Any) -> tuple[list, dict | None]:
+    """Validate a tool's ``attachments`` argument. Returns ``(parsed, None)`` or ``([], error_json)``."""
+    try:
+        parsed = parse_attachment_inputs(attachments)
+        if parsed:
+            validate_attachment_limits(
+                parsed, max_count=s.max_attachment_count, max_bytes=s.max_attachment_upload_bytes
+            )
+        return parsed, None
+    except ValueError as e:
+        return [], {"error": "validation_error", "message": str(e)}
+
+
 async def send_email(
     ctx: Context,
     subject: str,
@@ -89,8 +109,17 @@ async def send_email(
     to_addresses: list[str],
     content_type: str = "Text",
     save_to_sent_items: bool = True,
+    attachments: list[dict] | None = None,
 ) -> str:
-    """Send an email from the signed-in user (delegated ``Mail.Send``). Disabled unless ENABLE_WRITE_OPERATIONS=true."""
+    """Send an email from the signed-in user (delegated ``Mail.Send``). Disabled unless ENABLE_WRITE_OPERATIONS=true.
+
+    Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
+    "content_type": str | None, "is_inline": bool}``. Files small enough for Graph's inline
+    limit (<=3MB) are sent in the same ``sendMail`` call; if any attachment is larger, this
+    tool transparently creates a draft, attaches via a chunked upload session, then sends the
+    draft instead (``used_draft_path: true`` in the response) — Graph's ``sendMail`` endpoint
+    has no message id to attach large files to before the message exists.
+    """
     s = get_settings()
     if not s.enable_write_operations:
         await tool_log_info(ctx, "send_email: write_disabled (ENABLE_WRITE_OPERATIONS=false)")
@@ -101,21 +130,65 @@ async def send_email(
             }
         )
 
+    parsed_attachments, error = _parse_and_validate_attachments(attachments, s)
+    if error:
+        return json.dumps(error)
+
     try:
         client = make_graph_client(ctx)
     except (GraphTokenExpiredError, GraphTokenMissingError) as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"send_email: start recipients={len(to_addresses)}")
     await tool_report_progress(ctx, 20, 100, message="send_email: start")
-    payload = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": content_type, "content": body_text},
-            "toRecipients": [{"emailAddress": {"address": a}} for a in to_addresses],
-        },
-        "saveToSentItems": save_to_sent_items,
+
+    message: dict = {
+        "subject": subject,
+        "body": {"contentType": content_type, "content": body_text},
+        "toRecipients": [{"emailAddress": {"address": a}} for a in to_addresses],
     }
+
     try:
+        if parsed_attachments and has_large_attachment(parsed_attachments):
+            await tool_report_progress(ctx, 40, 100, message="send_email: creating draft for large attachment(s)")
+            draft = await client.create_message_draft(message)
+            draft_id = draft["id"]
+            try:
+                await tool_report_progress(ctx, 70, 100, message="send_email: attaching files")
+                await attach_files_to_message(client, draft_id, parsed_attachments)
+            except httpx.HTTPStatusError as e:
+                await tool_log_warning(ctx, f"send_email: attach http_error status={e.response.status_code}")
+                return json.dumps(
+                    {
+                        "error": "http_error",
+                        "status_code": e.response.status_code,
+                        "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+                        "draft_id": draft_id,
+                    }
+                )
+            except httpx.HTTPError as e:
+                await tool_log_warning(ctx, f"send_email: attach network_error {type(e).__name__}")
+                return json.dumps(
+                    {
+                        "error": "network_error",
+                        "message": sanitize_client_error_message(str(e)),
+                        "draft_id": draft_id,
+                    }
+                )
+            await tool_report_progress(ctx, 90, 100, message="send_email: sending draft")
+            await client.send_draft(draft_id)
+            await tool_report_progress(ctx, 100, 100, message="send_email: complete")
+            await tool_log_info(ctx, "send_email: sent via draft+attach (large attachment present)")
+            return json.dumps(
+                {
+                    "ok": True,
+                    "message": "Sent via draft+attach (large attachment present).",
+                    "used_draft_path": True,
+                }
+            )
+
+        if parsed_attachments:
+            message["attachments"] = build_inline_small_attachments_payload(parsed_attachments)
+        payload = {"message": message, "saveToSentItems": save_to_sent_items}
         await tool_report_progress(ctx, 60, 100, message="send_email: calling Graph sendMail")
         await client.send_mail(payload)
         await tool_report_progress(ctx, 100, 100, message="send_email: complete")
@@ -180,8 +253,15 @@ async def create_draft(
     body_text: str,
     to_addresses: list[str] | None = None,
     content_type: str = "Text",
+    attachments: list[dict] | None = None,
 ) -> str:
-    """Create a draft message in the signed-in user's Drafts folder."""
+    """Create a draft message in the signed-in user's Drafts folder.
+
+    Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
+    "content_type": str | None, "is_inline": bool}``. Each file is attached after the draft is
+    created, using Graph's small-file path (<=3MB) or a chunked upload session for larger files.
+    The response includes an ``attachments`` list (id/name/size) for what was attached.
+    """
     s = get_settings()
     if not s.enable_write_operations:
         await tool_log_info(ctx, "create_draft: write_disabled (ENABLE_WRITE_OPERATIONS=false)")
@@ -191,6 +271,10 @@ async def create_draft(
                 "message": "Set ENABLE_WRITE_OPERATIONS=true to enable create_draft.",
             }
         )
+
+    parsed_attachments, error = _parse_and_validate_attachments(attachments, s)
+    if error:
+        return json.dumps(error)
 
     try:
         client = make_graph_client(ctx)
@@ -208,9 +292,33 @@ async def create_draft(
     try:
         await tool_report_progress(ctx, 60, 100, message="create_draft: calling Graph")
         created = await client.create_message_draft(msg)
+        result: dict = {"ok": True, "message": created}
+        if parsed_attachments:
+            await tool_report_progress(ctx, 80, 100, message="create_draft: attaching files")
+            try:
+                result["attachments"] = await attach_files_to_message(client, created["id"], parsed_attachments)
+            except httpx.HTTPStatusError as e:
+                await tool_log_warning(ctx, f"create_draft: attach http_error status={e.response.status_code}")
+                return json.dumps(
+                    {
+                        "error": "http_error",
+                        "status_code": e.response.status_code,
+                        "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+                        "draft_id": created["id"],
+                    }
+                )
+            except httpx.HTTPError as e:
+                await tool_log_warning(ctx, f"create_draft: attach network_error {type(e).__name__}")
+                return json.dumps(
+                    {
+                        "error": "network_error",
+                        "message": sanitize_client_error_message(str(e)),
+                        "draft_id": created["id"],
+                    }
+                )
         await tool_report_progress(ctx, 100, 100, message="create_draft: complete")
         await tool_log_info(ctx, "create_draft: draft created")
-        return json.dumps({"ok": True, "message": created}, indent=2)
+        return json.dumps(result, indent=2)
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"create_draft: http_error status={e.response.status_code}")
         return json.dumps(
@@ -437,12 +545,15 @@ async def create_reply_draft(
     message_id: str,
     comment: str | None = None,
     content_type: str = "Text",
+    attachments: list[dict] | None = None,
 ) -> str:
     """Create a reply draft for a message, pre-populated with sender, subject (RE:), and quoted body.
 
     Optionally include a ``comment`` (reply text) to pre-fill the draft body.
     ``content_type``: ``Text`` (default) or ``HTML`` to send ``comment`` as markup — matching
     ``create_draft`` and ``send_email``. The quoted original is preserved either way.
+    Optional ``attachments``: same shape as ``create_draft`` — attached after the reply draft
+    is created; the response includes an ``attachments`` list (id/name/size).
     Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
     """
     s = get_settings()
@@ -450,6 +561,10 @@ async def create_reply_draft(
         return json.dumps(
             {"error": "write_disabled", "message": "Set ENABLE_WRITE_OPERATIONS=true to enable create_reply_draft."}
         )
+
+    parsed_attachments, error = _parse_and_validate_attachments(attachments, s)
+    if error:
+        return json.dumps(error)
 
     try:
         client = make_graph_client(ctx)
@@ -459,7 +574,30 @@ async def create_reply_draft(
     await tool_log_info(ctx, f"create_reply_draft: message_id={message_id!r}")
     try:
         draft = await client.create_reply(message_id, comment=comment, content_type=content_type)
-        return json.dumps({"ok": True, "message": draft}, indent=2)
+        result: dict = {"ok": True, "message": draft}
+        if parsed_attachments:
+            try:
+                result["attachments"] = await attach_files_to_message(client, draft["id"], parsed_attachments)
+            except httpx.HTTPStatusError as e:
+                await tool_log_warning(ctx, f"create_reply_draft: attach http_error status={e.response.status_code}")
+                return json.dumps(
+                    {
+                        "error": "http_error",
+                        "status_code": e.response.status_code,
+                        "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+                        "draft_id": draft["id"],
+                    }
+                )
+            except httpx.HTTPError as e:
+                await tool_log_warning(ctx, f"create_reply_draft: attach network_error {type(e).__name__}")
+                return json.dumps(
+                    {
+                        "error": "network_error",
+                        "message": sanitize_client_error_message(str(e)),
+                        "draft_id": draft["id"],
+                    }
+                )
+        return json.dumps(result, indent=2)
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"create_reply_draft: http_error status={e.response.status_code}")
         return json.dumps(

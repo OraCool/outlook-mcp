@@ -33,6 +33,20 @@ def test_valid_category_unchanged() -> None:
     assert r.confidence == 0.9
 
 
+@pytest.mark.parametrize("category", ["AGREEMENT_REACHED", "AGREEMENT_SIGNED"])
+def test_agreement_categories_accepted_by_default(category: str) -> None:
+    r = ClassificationResult.model_validate(
+        {
+            "email_id": "e1",
+            "category": category,
+            "confidence": 0.9,
+            "intent": {},
+        }
+    )
+    assert r.category == category
+    assert r.confidence == 0.9
+
+
 def test_custom_taxonomy_accepts_configured_label(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "outlook_mcp.models.email.get_classification_categories",

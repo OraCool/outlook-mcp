@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import TYPE_CHECKING
 
 import httpx
+from mcp.types import BlobResourceContents, ContentBlock, EmbeddedResource, ImageContent, TextContent
 
 from outlook_mcp.auth.graph_client import MailFolderAmbiguousError, MailFolderNotFoundError
 from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
 from outlook_mcp.config import get_settings
+from outlook_mcp.tools._attachments import guess_content_type
 from outlook_mcp.tools._common import (
     email_json_for_tool_response,
     graph_message_to_model,
@@ -351,7 +354,11 @@ async def list_inbox(
 
 
 async def get_attachments(message_id: str, ctx: Context) -> str:
-    """List attachments metadata for a message (does not download file bytes)."""
+    """List attachments metadata for a message (does not download file bytes).
+
+    Use ``get_attachment_content`` to download a specific attachment's bytes as native
+    multimodal content (an image the model can see, or an embedded document resource).
+    """
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
@@ -378,6 +385,133 @@ async def get_attachments(message_id: str, ctx: Context) -> str:
         return json.dumps(
             {"error": "network_error", "message": sanitize_client_error_message(str(e))},
         )
+
+
+async def get_attachment_content(message_id: str, attachment_id: str, ctx: Context) -> list[ContentBlock]:
+    """Download one attachment's bytes and return them as native multimodal MCP content.
+
+    Images become ``ImageContent`` (the model can see them directly); every other file type
+    becomes an ``EmbeddedResource`` blob. A leading ``TextContent`` block carries filename/size/
+    content-type, since neither content type carries a filename field on its own. Attachments
+    over ``MAX_MULTIMODAL_ATTACHMENT_BYTES`` return a metadata-only error instead of the blob —
+    use ``get_attachments`` first to check size for large files.
+    """
+    pid = _preview(message_id)
+    settings = get_settings()
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return [TextContent(type="text", text=json.dumps(tool_error_token(e)))]
+
+    await tool_log_info(ctx, f"get_attachment_content: start message_id={pid} attachment_id={attachment_id!r}")
+    try:
+        meta = await client.get_attachment(message_id, attachment_id)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"get_attachment_content: http_error status={e.response.status_code}")
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": "http_error",
+                        "status_code": e.response.status_code,
+                        "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+                    }
+                ),
+            )
+        ]
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"get_attachment_content: network_error {type(e).__name__}")
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))}),
+            )
+        ]
+
+    if meta.get("@odata.type") != "#microsoft.graph.fileAttachment":
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": "unsupported_attachment_type",
+                        "odata_type": meta.get("@odata.type"),
+                        "attachment": meta,
+                    }
+                ),
+            )
+        ]
+
+    size = meta.get("size") or 0
+    if size > settings.max_multimodal_attachment_bytes:
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": "attachment_too_large_for_inline",
+                        "size": size,
+                        "limit": settings.max_multimodal_attachment_bytes,
+                        "message": (
+                            "Use get_attachments for metadata; this attachment exceeds the "
+                            "inline multimodal size limit."
+                        ),
+                    }
+                ),
+            )
+        ]
+
+    try:
+        raw_bytes, header_content_type = await client.get_attachment_raw_bytes(message_id, attachment_id)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"get_attachment_content: http_error status={e.response.status_code}")
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": "http_error",
+                        "status_code": e.response.status_code,
+                        "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+                    }
+                ),
+            )
+        ]
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"get_attachment_content: network_error {type(e).__name__}")
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))}),
+            )
+        ]
+
+    name = meta.get("name") or "attachment"
+    content_type = meta.get("contentType") or header_content_type or guess_content_type(name, None)
+    b64 = base64.b64encode(raw_bytes).decode()
+
+    blocks: list[ContentBlock] = [
+        TextContent(
+            type="text",
+            text=json.dumps({"name": name, "size": len(raw_bytes), "content_type": content_type}),
+        )
+    ]
+    if content_type.startswith("image/"):
+        blocks.append(ImageContent(type="image", data=b64, mimeType=content_type))
+    else:
+        blocks.append(
+            EmbeddedResource(
+                type="resource",
+                resource=BlobResourceContents(
+                    uri=f"attachment://{message_id}/{attachment_id}",
+                    mimeType=content_type,
+                    blob=b64,
+                ),
+            )
+        )
+    await tool_log_info(ctx, "get_attachment_content: complete")
+    return blocks
 
 
 async def list_master_categories(ctx: Context, top: int = 500) -> str:

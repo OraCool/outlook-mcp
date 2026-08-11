@@ -138,12 +138,36 @@ class Settings(BaseSettings):
         ),
     )
 
+    max_attachment_upload_bytes: int = Field(
+        default=150 * 1024 * 1024,
+        ge=1,
+        validation_alias=AliasChoices("MAX_ATTACHMENT_UPLOAD_BYTES", "max_attachment_upload_bytes"),
+        description="Reject any single outgoing attachment larger than this (Graph's practical ceiling is ~150MB).",
+    )
+    max_attachment_count: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        validation_alias=AliasChoices("MAX_ATTACHMENT_COUNT", "max_attachment_count"),
+        description="Max number of attachments accepted per send_email/create_draft/create_reply_draft call.",
+    )
+    max_multimodal_attachment_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1,
+        validation_alias=AliasChoices("MAX_MULTIMODAL_ATTACHMENT_BYTES", "max_multimodal_attachment_bytes"),
+        description=(
+            "Max decoded byte size get_attachment_content will inline as an ImageContent/EmbeddedResource "
+            "block (base64 inflates ~33%, and this also becomes LLM context). Larger attachments get a "
+            "metadata-only JSON response instead of the blob."
+        ),
+    )
+
     classification_categories: str = Field(
         default=(
             "PAYMENT_REMINDER_SENT,INVOICE_NOT_RECEIVED,INVOICE_DISPUTE,PAYMENT_PROMISE,"
             "PAYMENT_CONFIRMATION,EXTENSION_REQUEST,PARTIAL_PAYMENT_NOTE,ESCALATION_LEGAL,"
             "INTERNAL_NOTE,UNCLASSIFIED,REMITTANCE_ADVICE,BALANCE_INQUIRY,"
-            "CREDIT_NOTE_REQUEST,AUTO_REPLY,BILLING_UPDATE"
+            "CREDIT_NOTE_REQUEST,AUTO_REPLY,BILLING_UPDATE,AGREEMENT_REACHED,AGREEMENT_SIGNED"
         ),
         validation_alias=AliasChoices("CLASSIFICATION_CATEGORIES", "classification_categories"),
         description=(

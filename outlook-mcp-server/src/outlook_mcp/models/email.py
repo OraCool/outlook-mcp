@@ -23,6 +23,8 @@ DEFAULT_CLASSIFICATION_CATEGORIES: frozenset[str] = frozenset(
         "CREDIT_NOTE_REQUEST",
         "AUTO_REPLY",
         "BILLING_UPDATE",
+        "AGREEMENT_REACHED",
+        "AGREEMENT_SIGNED",
     }
 )
 

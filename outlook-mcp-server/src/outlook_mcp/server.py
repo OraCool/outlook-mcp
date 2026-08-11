@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ContentBlock
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -147,8 +148,23 @@ def build_mcp() -> MCPServer:
 
     @mcp.tool()
     async def get_attachments(message_id: str, ctx: Context) -> str:
-        """List attachment metadata for a message."""
+        """List attachment metadata for a message.
+
+        Use ``get_attachment_content`` to download a specific attachment's bytes.
+        """
         return await email_reader.get_attachments(message_id, ctx)
+
+    @mcp.tool()
+    async def get_attachment_content(message_id: str, attachment_id: str, ctx: Context) -> list[ContentBlock]:
+        """Download one attachment's bytes and return them as native multimodal content.
+
+        Images are returned as an ``ImageContent`` block the model can see directly; every
+        other file type (PDF, Office docs, etc.) is returned as an ``EmbeddedResource`` blob.
+        A leading text block carries the filename/size/content-type. Attachments larger than
+        ``MAX_MULTIMODAL_ATTACHMENT_BYTES`` (default 8MB) return a metadata-only error instead
+        of the blob — check size with ``get_attachments`` first for large files.
+        """
+        return await email_reader.get_attachment_content(message_id, attachment_id, ctx)
 
     @mcp.tool()
     async def list_master_categories(ctx: Context, top: int = 500) -> str:
@@ -235,8 +251,15 @@ def build_mcp() -> MCPServer:
         to_addresses: list[str],
         content_type: str = "Text",
         save_to_sent_items: bool = True,
+        attachments: list[dict] | None = None,
     ) -> str:
-        """Send email (requires ENABLE_WRITE_OPERATIONS=true and Mail.Send)."""
+        """Send email (requires ENABLE_WRITE_OPERATIONS=true and Mail.Send).
+
+        Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
+        "content_type": str | None, "is_inline": bool}``. Files over Graph's small-attachment
+        limit (3MB) automatically go through a draft-then-send fallback (see tool docstring);
+        the response includes ``used_draft_path: true`` when that happens.
+        """
         return await email_writer.send_email(
             ctx,
             subject=subject,
@@ -244,6 +267,7 @@ def build_mcp() -> MCPServer:
             to_addresses=to_addresses,
             content_type=content_type,
             save_to_sent_items=save_to_sent_items,
+            attachments=attachments,
         )
 
     @mcp.tool()
@@ -258,14 +282,21 @@ def build_mcp() -> MCPServer:
         body_text: str,
         to_addresses: list[str] | None = None,
         content_type: str = "Text",
+        attachments: list[dict] | None = None,
     ) -> str:
-        """Create a draft message (requires ENABLE_WRITE_OPERATIONS=true)."""
+        """Create a draft message (requires ENABLE_WRITE_OPERATIONS=true).
+
+        Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
+        "content_type": str | None, "is_inline": bool}``. Response includes an ``attachments``
+        list (id/name/size) for what was attached.
+        """
         return await email_writer.create_draft(
             ctx,
             subject=subject,
             body_text=body_text,
             to_addresses=to_addresses,
             content_type=content_type,
+            attachments=attachments,
         )
 
     @mcp.tool()
@@ -348,18 +379,23 @@ def build_mcp() -> MCPServer:
 
     @mcp.tool()
     async def create_reply_draft(
-        ctx: Context, message_id: str, comment: str | None = None, content_type: str = "Text"
+        ctx: Context,
+        message_id: str,
+        comment: str | None = None,
+        content_type: str = "Text",
+        attachments: list[dict] | None = None,
     ) -> str:
         """Create a reply draft for a message (sender, RE: subject and quoted body pre-filled).
 
         ``comment`` pre-fills the reply text. ``content_type``: ``Text`` (default) or ``HTML``
         to send ``comment`` as markup, matching ``create_draft`` / ``send_email``. The quoted
-        original is preserved in both cases.
+        original is preserved in both cases. Optional ``attachments``: same shape as
+        ``create_draft``.
 
         Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
         """
         return await email_writer.create_reply_draft(
-            ctx, message_id, comment=comment, content_type=content_type
+            ctx, message_id, comment=comment, content_type=content_type, attachments=attachments
         )
 
     @mcp.tool()
