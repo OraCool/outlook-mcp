@@ -255,10 +255,15 @@ def build_mcp() -> MCPServer:
     ) -> str:
         """Send email (requires ENABLE_WRITE_OPERATIONS=true and Mail.Send).
 
-        Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
-        "content_type": str | None, "is_inline": bool}``. Files over Graph's small-attachment
-        limit (3MB) automatically go through a draft-then-send fallback (see tool docstring);
-        the response includes ``used_draft_path: true`` when that happens.
+        Optional ``attachments``: list of ``{"filename": str | None, "content_type": str | None,
+        "content_base64": str | None, "file_path": str | None, "is_inline": bool}`` — exactly
+        one of ``content_base64``/``file_path`` per entry. Prefer ``file_path`` (the server reads
+        the file itself from local disk) over ``content_base64`` for anything but tiny files:
+        transcribing a large file's base64 content as a literal argument value is slow and
+        error-prone for the calling model. ``filename`` defaults to the path's basename when
+        ``file_path`` is used. Files over Graph's small-attachment limit (3MB) automatically go
+        through a draft-then-send fallback (see tool docstring); the response includes
+        ``used_draft_path: true`` when that happens.
         """
         return await email_writer.send_email(
             ctx,
@@ -286,9 +291,11 @@ def build_mcp() -> MCPServer:
     ) -> str:
         """Create a draft message (requires ENABLE_WRITE_OPERATIONS=true).
 
-        Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
-        "content_type": str | None, "is_inline": bool}``. Response includes an ``attachments``
-        list (id/name/size) for what was attached.
+        Optional ``attachments``: list of ``{"filename": str | None, "content_type": str | None,
+        "content_base64": str | None, "file_path": str | None, "is_inline": bool}`` — exactly
+        one of ``content_base64``/``file_path`` per entry; prefer ``file_path`` for anything but
+        tiny files (see ``send_email`` for why). Response includes an ``attachments`` list
+        (id/name/size) for what was attached.
         """
         return await email_writer.create_draft(
             ctx,

@@ -15,6 +15,8 @@ from outlook_mcp.tools._attachments import (
     guess_content_type,
     has_large_attachment,
     parse_attachment_inputs,
+    read_attachment_file_bytes,
+    resolve_attachment_bytes,
     validate_attachment_limits,
 )
 
@@ -104,7 +106,14 @@ def test_validate_attachment_limits_oversized_raises() -> None:
 
 
 def test_validate_attachment_limits_empty_file_raises() -> None:
-    attachments = [AttachmentInput(filename="empty.txt", content_base64="")]
+    with pytest.raises(ValueError):
+        parse_attachment_inputs([{"filename": "empty.txt", "content_base64": ""}])
+
+
+def test_validate_attachment_limits_empty_file_path_raises(tmp_path) -> None:
+    f = tmp_path / "empty.txt"
+    f.write_bytes(b"")
+    attachments = [AttachmentInput(file_path=str(f))]
     with pytest.raises(ValueError):
         validate_attachment_limits(attachments, max_count=10, max_bytes=1024)
 
@@ -113,6 +122,99 @@ def test_validate_attachment_limits_bad_base64_raises() -> None:
     attachments = [AttachmentInput(filename="a.txt", content_base64="not-valid-base64!!")]
     with pytest.raises(ValueError):
         validate_attachment_limits(attachments, max_count=10, max_bytes=1024)
+
+
+def test_attachment_input_requires_exactly_one_source() -> None:
+    with pytest.raises(ValueError):
+        AttachmentInput(filename="a.txt")
+
+
+def test_attachment_input_rejects_both_sources() -> None:
+    with pytest.raises(ValueError):
+        AttachmentInput(filename="a.txt", content_base64="aGVsbG8=", file_path="/tmp/a.txt")
+
+
+def test_attachment_input_filename_defaults_to_basename_from_file_path(tmp_path) -> None:
+    f = tmp_path / "invoice.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    a = AttachmentInput(file_path=str(f))
+    assert a.filename == "invoice.pdf"
+
+
+def test_attachment_input_filename_required_when_using_content_base64() -> None:
+    with pytest.raises(ValueError):
+        AttachmentInput(content_base64="aGVsbG8=")
+
+
+def test_read_attachment_file_bytes_reads_file(tmp_path) -> None:
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"hello")
+    assert read_attachment_file_bytes(str(f)) == b"hello"
+
+
+def test_read_attachment_file_bytes_missing_file_raises(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        read_attachment_file_bytes(str(tmp_path / "does-not-exist.txt"))
+
+
+def test_resolve_attachment_bytes_from_content_base64() -> None:
+    a = AttachmentInput(filename="a.txt", content_base64="aGVsbG8=")
+    assert resolve_attachment_bytes(a) == b"hello"
+
+
+def test_resolve_attachment_bytes_from_file_path(tmp_path) -> None:
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"hello from disk")
+    a = AttachmentInput(file_path=str(f))
+    assert resolve_attachment_bytes(a) == b"hello from disk"
+
+
+def test_build_inline_small_attachments_payload_from_file_path(tmp_path) -> None:
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"hello")
+    attachments = [AttachmentInput(file_path=str(f), content_type="text/plain")]
+    payload = build_inline_small_attachments_payload(attachments)
+    assert payload == [
+        {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": "a.txt",
+            "contentType": "text/plain",
+            "contentBytes": "aGVsbG8=",
+            "isInline": False,
+        }
+    ]
+
+
+def test_validate_attachment_limits_oversized_file_path_raises(tmp_path) -> None:
+    f = tmp_path / "big.bin"
+    f.write_bytes(b"x" * 10)
+    attachments = [AttachmentInput(file_path=str(f))]
+    with pytest.raises(ValueError):
+        validate_attachment_limits(attachments, max_count=10, max_bytes=1)
+
+
+def test_has_large_attachment_true_for_large_file_path(tmp_path) -> None:
+    f = tmp_path / "big.bin"
+    f.write_bytes(b"x" * (SMALL_ATTACHMENT_THRESHOLD_BYTES + 1))
+    attachments = [AttachmentInput(file_path=str(f))]
+    assert has_large_attachment(attachments) is True
+
+
+@pytest.mark.asyncio
+async def test_attach_files_to_message_routes_file_path_small_file(tmp_path) -> None:
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"hello")
+
+    class FakeClient:
+        async def add_attachment_small(self, message_id, *, name, content_type, content_b64, is_inline=False):
+            return {"id": "att-1", "name": name, "size": len(base64.b64decode(content_b64))}
+
+        async def upload_large_attachment(self, *args, **kwargs):
+            raise AssertionError("should not be called for a small file")
+
+    attachments = [AttachmentInput(file_path=str(f), content_type="text/plain")]
+    results = await attach_files_to_message(FakeClient(), "msg-1", attachments)
+    assert results == [{"id": "att-1", "name": "a.txt", "size": 5}]
 
 
 def test_has_large_attachment_false_for_small_only() -> None:

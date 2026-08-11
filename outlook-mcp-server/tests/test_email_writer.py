@@ -689,3 +689,53 @@ async def test_create_draft_attachment_http_error_surfaces_draft_id() -> None:
     data = json.loads(result)
     assert data["error"] == "http_error"
     assert data["draft_id"] == "draft-1"
+
+
+@pytest.mark.asyncio
+async def test_create_draft_with_file_path_attachment(tmp_path) -> None:
+    import base64
+
+    content = b"%PDF-1.4 fake content"
+    f = tmp_path / "invoice.pdf"
+    f.write_bytes(content)
+    mock_client = AsyncMock()
+    mock_client.create_message_draft = AsyncMock(return_value={"id": "draft-1"})
+    mock_client.add_attachment_small = AsyncMock(
+        return_value={"id": "att-1", "name": "invoice.pdf", "size": len(content)}
+    )
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await create_draft(
+            ctx=None, subject="S", body_text="B", attachments=[{"file_path": str(f)}]
+        )
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["attachments"] == [{"id": "att-1", "name": "invoice.pdf", "size": len(content)}]
+    mock_client.add_attachment_small.assert_awaited_once_with(
+        "draft-1",
+        name="invoice.pdf",
+        content_type="application/pdf",
+        content_b64=base64.b64encode(content).decode(),
+        is_inline=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_email_file_path_attachment_missing_file_rejected() -> None:
+    mock_client = AsyncMock()
+    with (
+        patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()),
+        patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client),
+    ):
+        result = await send_email(
+            ctx=None,
+            subject="S",
+            body_text="B",
+            to_addresses=["a@b.com"],
+            attachments=[{"file_path": "/no/such/file.pdf"}],
+        )
+    data = json.loads(result)
+    assert data["error"] == "validation_error"
+    mock_client.send_mail.assert_not_awaited()
