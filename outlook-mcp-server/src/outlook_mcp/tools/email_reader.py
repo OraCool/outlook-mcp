@@ -392,14 +392,22 @@ async def get_attachments(message_id: str, ctx: Context) -> str:
         )
 
 
-async def get_attachment_content(message_id: str, attachment_id: str, ctx: Context) -> list[ContentBlock]:
+async def get_attachment_content(
+    message_id: str, attachment_id: str, ctx: Context, as_resource: bool = False
+) -> list[ContentBlock]:
     """Download one attachment's bytes and return them as native multimodal MCP content.
 
-    Images become ``ImageContent`` (the model can see them directly); every other file type
-    becomes an ``EmbeddedResource`` blob. A leading ``TextContent`` block carries filename/size/
-    content-type, since neither content type carries a filename field on its own. Attachments
-    over ``MAX_MULTIMODAL_ATTACHMENT_BYTES`` return a metadata-only error instead of the blob —
-    use ``get_attachments`` first to check size for large files.
+    By default, images become ``ImageContent`` so the model can visually see them; every other
+    file type becomes an ``EmbeddedResource`` blob. Set ``as_resource=True`` to always get an
+    ``EmbeddedResource`` (base64 text), including for images — use this when the goal is to
+    save/forward the file's bytes rather than have the model look at it: when an image is
+    delivered as ``ImageContent``, the model only ever sees the decoded picture, it never
+    receives the base64 as literal text it could pass to a file-write tool.
+
+    A leading ``TextContent`` block carries filename/size/content-type, since neither content
+    type carries a filename field on its own. Attachments over ``MAX_MULTIMODAL_ATTACHMENT_BYTES``
+    return a metadata-only error instead of the blob — use ``get_attachments`` first to check
+    size for large files.
     """
     pid = _preview(message_id)
     settings = get_settings()
@@ -502,7 +510,7 @@ async def get_attachment_content(message_id: str, attachment_id: str, ctx: Conte
             text=json.dumps({"name": name, "size": len(raw_bytes), "content_type": content_type}),
         )
     ]
-    if content_type.startswith("image/"):
+    if not as_resource and content_type.startswith("image/"):
         blocks.append(ImageContent(type="image", data=b64, mimeType=content_type))
     else:
         blocks.append(
