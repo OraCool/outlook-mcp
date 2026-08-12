@@ -1021,3 +1021,64 @@ async def test_get_attachments_strips_content_bytes_defensively() -> None:
         {"id": "att-1", "name": "IMG_2291.HEIC", "contentType": "image/heic", "size": 2400000}
     ]
     assert "contentBytes" not in json.dumps(data)
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_as_resource_forces_embedded_resource_for_image() -> None:
+    from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "IMG_2298.jpeg",
+            "contentType": "image/jpeg",
+            "size": 8,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"\xff\xd8\xff\xe0\x00\x10JF", "image/jpeg"))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-1", ctx=None, as_resource=True)
+
+    assert not any(isinstance(b, ImageContent) for b in result)
+    resource_blocks = [b for b in result if isinstance(b, EmbeddedResource)]
+    assert len(resource_blocks) == 1
+    resource = resource_blocks[0].resource
+    assert isinstance(resource, BlobResourceContents)
+    assert resource.mime_type == "image/jpeg"
+    import base64 as _b64
+
+    assert _b64.b64decode(resource.blob) == b"\xff\xd8\xff\xe0\x00\x10JF"
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_as_resource_false_still_returns_image_content() -> None:
+    from mcp.types import ImageContent
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "IMG_2298.jpeg",
+            "contentType": "image/jpeg",
+            "size": 8,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"\xff\xd8\xff\xe0\x00\x10JF", "image/jpeg"))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-1", ctx=None, as_resource=False)
+
+    image_blocks = [b for b in result if isinstance(b, ImageContent)]
+    assert len(image_blocks) == 1

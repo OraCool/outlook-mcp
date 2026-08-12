@@ -156,16 +156,23 @@ def build_mcp() -> MCPServer:
         return await email_reader.get_attachments(message_id, ctx)
 
     @mcp.tool()
-    async def get_attachment_content(message_id: str, attachment_id: str, ctx: Context) -> list[ContentBlock]:
+    async def get_attachment_content(
+        message_id: str, attachment_id: str, ctx: Context, as_resource: bool = False
+    ) -> list[ContentBlock]:
         """Download one attachment's bytes and return them as native multimodal content.
 
-        Images are returned as an ``ImageContent`` block the model can see directly; every
-        other file type (PDF, Office docs, etc.) is returned as an ``EmbeddedResource`` blob.
-        A leading text block carries the filename/size/content-type. Attachments larger than
-        ``MAX_MULTIMODAL_ATTACHMENT_BYTES`` (default 8MB) return a metadata-only error instead
-        of the blob — check size with ``get_attachments`` first for large files.
+        By default, images are returned as an ``ImageContent`` block the model can see
+        directly; every other file type (PDF, Office docs, etc.) is returned as an
+        ``EmbeddedResource`` blob. Set ``as_resource=True`` to always get an ``EmbeddedResource``
+        (base64 text) instead — use this when the goal is to save or forward the file's bytes
+        rather than have the model look at it: an image delivered as ``ImageContent`` is only
+        ever seen by the model, never received as literal text it could pass to a file-write
+        tool. A leading text block carries the filename/size/content-type either way.
+        Attachments larger than ``MAX_MULTIMODAL_ATTACHMENT_BYTES`` (default 8MB) return a
+        metadata-only error instead of the blob — check size with ``get_attachments`` first for
+        large files.
         """
-        return await email_reader.get_attachment_content(message_id, attachment_id, ctx)
+        return await email_reader.get_attachment_content(message_id, attachment_id, ctx, as_resource=as_resource)
 
     @mcp.tool()
     async def list_master_categories(ctx: Context, top: int = 500) -> str:
