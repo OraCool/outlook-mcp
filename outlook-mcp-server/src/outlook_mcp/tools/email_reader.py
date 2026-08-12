@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -510,21 +511,114 @@ async def get_attachment_content(
             text=json.dumps({"name": name, "size": len(raw_bytes), "content_type": content_type}),
         )
     ]
-    if not as_resource and content_type.startswith("image/"):
+    is_image = content_type.startswith("image/")
+    if not as_resource and is_image:
         blocks.append(ImageContent(type="image", data=b64, mimeType=content_type))
     else:
+        # When forcing an image through as_resource, mask mimeType as a generic binary type.
+        # MCP clients (e.g. Claude Desktop) render ANY block with an image/* mimeType inline
+        # and truncate the response before the base64 ever reaches the model as text — masking
+        # it is the only way as_resource actually delivers extractable bytes for images. The
+        # real content type is still available in the leading TextContent metadata block.
+        resource_mime_type = "application/octet-stream" if (as_resource and is_image) else content_type
         blocks.append(
             EmbeddedResource(
                 type="resource",
                 resource=BlobResourceContents(
                     uri=f"attachment://{message_id}/{attachment_id}",
-                    mimeType=content_type,
+                    mimeType=resource_mime_type,
                     blob=b64,
                 ),
             )
         )
     await tool_log_info(ctx, "get_attachment_content: complete")
     return blocks
+
+
+async def save_attachment_to_path(message_id: str, attachment_id: str, path: str, ctx: Context) -> str:
+    """Download one attachment and write it directly to local disk (no base64 round-trip).
+
+    ``path`` is either the exact target file path, or an existing directory — in which case the
+    attachment's own filename is used. Missing parent directories are created. This is the
+    reliable way to save an attachment (especially an image): routing bytes through MCP tool
+    responses hits context/token limits and, for images, MCP clients render ``image/*`` content
+    inline and truncate the response before the base64 ever reaches the model as usable text.
+    Requires ENABLE_WRITE_OPERATIONS=true (this tool writes to the local filesystem).
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable save_attachment_to_path.",
+            }
+        )
+    if not path or not path.strip():
+        return json.dumps({"error": "validation_error", "message": "path must be a non-empty string."})
+
+    pid = _preview(message_id)
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"save_attachment_to_path: start message_id={pid} attachment_id={attachment_id!r}")
+    try:
+        meta = await client.get_attachment(message_id, attachment_id)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"save_attachment_to_path: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"save_attachment_to_path: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+    if meta.get("@odata.type") != "#microsoft.graph.fileAttachment":
+        return json.dumps(
+            {
+                "error": "unsupported_attachment_type",
+                "odata_type": meta.get("@odata.type"),
+                "attachment": meta,
+            }
+        )
+
+    try:
+        raw_bytes, header_content_type = await client.get_attachment_raw_bytes(message_id, attachment_id)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"save_attachment_to_path: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"save_attachment_to_path: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+    name = meta.get("name") or "attachment"
+    content_type = meta.get("contentType") or header_content_type or guess_content_type(name, None)
+
+    try:
+        target = Path(path).expanduser()
+        if target.exists() and target.is_dir():
+            target = target / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw_bytes)
+    except OSError as e:
+        await tool_log_warning(ctx, f"save_attachment_to_path: filesystem_error {type(e).__name__}")
+        return json.dumps({"error": "filesystem_error", "message": sanitize_client_error_message(str(e))})
+
+    await tool_log_info(ctx, "save_attachment_to_path: complete")
+    return json.dumps(
+        {"ok": True, "path": str(target), "name": name, "size": len(raw_bytes), "content_type": content_type}
+    )
 
 
 async def list_master_categories(ctx: Context, top: int = 500) -> str:

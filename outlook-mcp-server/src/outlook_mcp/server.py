@@ -164,15 +164,29 @@ def build_mcp() -> MCPServer:
         By default, images are returned as an ``ImageContent`` block the model can see
         directly; every other file type (PDF, Office docs, etc.) is returned as an
         ``EmbeddedResource`` blob. Set ``as_resource=True`` to always get an ``EmbeddedResource``
-        (base64 text) instead — use this when the goal is to save or forward the file's bytes
-        rather than have the model look at it: an image delivered as ``ImageContent`` is only
-        ever seen by the model, never received as literal text it could pass to a file-write
-        tool. A leading text block carries the filename/size/content-type either way.
-        Attachments larger than ``MAX_MULTIMODAL_ATTACHMENT_BYTES`` (default 8MB) return a
-        metadata-only error instead of the blob — check size with ``get_attachments`` first for
-        large files.
+        instead (base64 text, ``mimeType`` deliberately generic even for images — MCP clients
+        render an image/* mimeType inline and truncate the response before the base64 reaches
+        the model as usable text). A leading text block carries the filename/size/real
+        content-type either way. Attachments larger than ``MAX_MULTIMODAL_ATTACHMENT_BYTES``
+        (default 8MB) return a metadata-only error instead of the blob — check size with
+        ``get_attachments`` first for large files.
+
+        To actually save an attachment to local disk, prefer ``save_attachment_to_path`` over
+        ``as_resource=True`` — it writes the file directly server-side with no base64 round-trip
+        through the tool response at all, so it isn't subject to context/token limits either.
         """
         return await email_reader.get_attachment_content(message_id, attachment_id, ctx, as_resource=as_resource)
+
+    @mcp.tool()
+    async def save_attachment_to_path(message_id: str, attachment_id: str, path: str, ctx: Context) -> str:
+        """Download one attachment and write it directly to local disk (no base64 round-trip).
+
+        ``path`` is either the exact target file path, or an existing directory — in which case
+        the attachment's own filename is used. Missing parent directories are created
+        automatically. Requires ENABLE_WRITE_OPERATIONS=true (this tool writes to the local
+        filesystem the server process runs on, not to Outlook).
+        """
+        return await email_reader.save_attachment_to_path(message_id, attachment_id, path, ctx)
 
     @mcp.tool()
     async def list_master_categories(ctx: Context, top: int = 500) -> str:

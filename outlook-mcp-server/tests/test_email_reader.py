@@ -820,6 +820,14 @@ class _AttachmentSettings:
     max_multimodal_attachment_bytes = 8 * 1024 * 1024
 
 
+class _AttachmentSettingsWriteEnabled(_AttachmentSettings):
+    enable_write_operations = True
+
+
+class _AttachmentSettingsWriteDisabled(_AttachmentSettings):
+    enable_write_operations = False
+
+
 @pytest.mark.asyncio
 async def test_get_attachment_content_image_returns_image_content() -> None:
     from mcp.types import ImageContent, TextContent
@@ -1025,7 +1033,7 @@ async def test_get_attachments_strips_content_bytes_defensively() -> None:
 
 @pytest.mark.asyncio
 async def test_get_attachment_content_as_resource_forces_embedded_resource_for_image() -> None:
-    from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent
+    from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 
     from outlook_mcp.tools.email_reader import get_attachment_content
 
@@ -1051,10 +1059,46 @@ async def test_get_attachment_content_as_resource_forces_embedded_resource_for_i
     assert len(resource_blocks) == 1
     resource = resource_blocks[0].resource
     assert isinstance(resource, BlobResourceContents)
-    assert resource.mime_type == "image/jpeg"
+    # mime_type is deliberately masked as application/octet-stream, not the real image/jpeg:
+    # MCP clients (e.g. Claude Desktop) render ANY block with an image/* mimeType inline and
+    # truncate the response before the base64 ever reaches the model as text, defeating the
+    # entire point of as_resource=True (getting bytes the caller can save). The real type is
+    # still available in the leading TextContent metadata block.
+    assert resource.mime_type == "application/octet-stream"
     import base64 as _b64
 
     assert _b64.b64decode(resource.blob) == b"\xff\xd8\xff\xe0\x00\x10JF"
+
+    text_blocks = [b for b in result if isinstance(b, TextContent)]
+    assert json.loads(text_blocks[0].text)["content_type"] == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_as_resource_does_not_mask_non_image_mime_type() -> None:
+    from mcp.types import BlobResourceContents, EmbeddedResource
+
+    from outlook_mcp.tools.email_reader import get_attachment_content
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "invoice.pdf",
+            "contentType": "application/pdf",
+            "size": 4,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"%PDF", "application/pdf"))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettings()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await get_attachment_content("msg-1", "att-1", ctx=None, as_resource=True)
+
+    resource_blocks = [b for b in result if isinstance(b, EmbeddedResource)]
+    assert isinstance(resource_blocks[0].resource, BlobResourceContents)
+    assert resource_blocks[0].resource.mime_type == "application/pdf"
 
 
 @pytest.mark.asyncio
@@ -1082,3 +1126,157 @@ async def test_get_attachment_content_as_resource_false_still_returns_image_cont
 
     image_blocks = [b for b in result if isinstance(b, ImageContent)]
     assert len(image_blocks) == 1
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_write_disabled() -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    with patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteDisabled()):
+        result = await save_attachment_to_path("msg-1", "att-1", "/tmp/whatever.txt", ctx=None)
+    data = json.loads(result)
+    assert data["error"] == "write_disabled"
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_empty_path_validation_error() -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    with patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()):
+        result = await save_attachment_to_path("msg-1", "att-1", "   ", ctx=None)
+    data = json.loads(result)
+    assert data["error"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_writes_file_to_exact_path(tmp_path) -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "IMG_2298.jpeg",
+            "contentType": "image/jpeg",
+            "size": 8,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"\xff\xd8\xff\xe0fake", "image/jpeg"))
+    target = tmp_path / "renamed.jpg"
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await save_attachment_to_path("msg-1", "att-1", str(target), ctx=None)
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert data["path"] == str(target)
+    assert data["name"] == "IMG_2298.jpeg"
+    assert data["size"] == 8
+    assert data["content_type"] == "image/jpeg"
+    assert target.read_bytes() == b"\xff\xd8\xff\xe0fake"
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_writes_into_directory_using_attachment_name(tmp_path) -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "IMG_2298.jpeg",
+            "contentType": "image/jpeg",
+            "size": 5,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"hello", "image/jpeg"))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await save_attachment_to_path("msg-1", "att-1", str(tmp_path), ctx=None)
+    data = json.loads(result)
+    assert data["ok"] is True
+    expected = tmp_path / "IMG_2298.jpeg"
+    assert data["path"] == str(expected)
+    assert expected.read_bytes() == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_creates_missing_parent_dirs(tmp_path) -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "a.txt",
+            "contentType": "text/plain",
+            "size": 5,
+        }
+    )
+    mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"hello", "text/plain"))
+    target = tmp_path / "Подписанные" / "Kalko" / "a.txt"
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await save_attachment_to_path("msg-1", "att-1", str(target), ctx=None)
+    data = json.loads(result)
+    assert data["ok"] is True
+    assert target.read_bytes() == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_unsupported_type(tmp_path) -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    mock_client = AsyncMock()
+    mock_client.get_attachment = AsyncMock(
+        return_value={"@odata.type": "#microsoft.graph.itemAttachment", "id": "att-1", "name": "nested.eml"}
+    )
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await save_attachment_to_path("msg-1", "att-1", str(tmp_path / "x.eml"), ctx=None)
+    data = json.loads(result)
+    assert data["error"] == "unsupported_attachment_type"
+    mock_client.get_attachment_raw_bytes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_http_error() -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    mock_client = AsyncMock()
+    resp = MagicMock(status_code=404, text="not found")
+    mock_client.get_attachment = AsyncMock(side_effect=httpx.HTTPStatusError("404", request=MagicMock(), response=resp))
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
+    ):
+        result = await save_attachment_to_path("msg-1", "att-1", "/tmp/x.txt", ctx=None)
+    data = json.loads(result)
+    assert data["error"] == "http_error"
+    assert data["status_code"] == 404
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_to_path_token_missing() -> None:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
+        patch(
+            "outlook_mcp.tools.email_reader.make_graph_client",
+            side_effect=GraphTokenMissingError("no token"),
+        ),
+    ):
+        result = await save_attachment_to_path("msg-1", "att-1", "/tmp/x.txt", ctx=None)
+    data = json.loads(result)
+    assert data["error"] == "missing_token"
