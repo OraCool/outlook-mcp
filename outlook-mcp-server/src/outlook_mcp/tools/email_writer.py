@@ -21,7 +21,9 @@ from outlook_mcp.tools._attachments import (
     parse_attachment_inputs,
     validate_attachment_limits,
 )
+from outlook_mcp.tools._batch import THROTTLE_ONLY_STATUSES, BatchOutcome, outcome_error_message, run_graph_batch
 from outlook_mcp.tools._common import make_graph_client, sanitize_client_error_message, tool_error_token
+from outlook_mcp.tools._folders import FOLDER_RESOLUTION_ERRORS, folder_error_payload, resolve_folder_reference
 from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_report_progress
 from outlook_mcp.tools.mail_query_params import graph_flag_for_patch, graph_importance_for_patch
 
@@ -29,6 +31,20 @@ if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
 
 _MAX_MESSAGE_CATEGORIES = 25
+# Upper bound per batch tool call: 50 Graph $batch envelopes; keeps one call's runtime bounded.
+_MAX_BATCH_ITEMS = 1000
+
+
+def _validate_categories(categories: Any) -> str | None:
+    """Return an error message when ``categories`` is not a valid Graph ``categories`` list."""
+    if not isinstance(categories, list) or not categories:
+        return "categories must be a non-empty list."
+    if len(categories) > _MAX_MESSAGE_CATEGORIES:
+        return f"At most {_MAX_MESSAGE_CATEGORIES} categories allowed per message."
+    for c in categories:
+        if not isinstance(c, str) or not c.strip():
+            return "Each category must be a non-empty string."
+    return None
 
 
 async def set_message_categories(ctx: Context, message_id: str, categories: list[str]) -> str:
@@ -46,20 +62,9 @@ async def set_message_categories(ctx: Context, message_id: str, categories: list
             }
         )
 
-    if not categories:
-        return json.dumps({"error": "validation_error", "message": "categories must be a non-empty list."})
-    if len(categories) > _MAX_MESSAGE_CATEGORIES:
-        return json.dumps(
-            {
-                "error": "validation_error",
-                "message": f"At most {_MAX_MESSAGE_CATEGORIES} categories allowed per message.",
-            }
-        )
-    for c in categories:
-        if not isinstance(c, str) or not c.strip():
-            return json.dumps(
-                {"error": "validation_error", "message": "Each category must be a non-empty string."}
-            )
+    invalid = _validate_categories(categories)
+    if invalid:
+        return json.dumps({"error": "validation_error", "message": invalid})
 
     try:
         client = make_graph_client(ctx)
@@ -410,10 +415,30 @@ async def set_email_priority(ctx: Context, message_id: str, priority: str) -> st
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
-async def move_email(ctx: Context, message_id: str, destination_folder_id: str) -> str:
+def compact_moved_message(moved: dict[str, Any]) -> dict[str, Any]:
+    """The few fields an agent needs after a move — never the body (a full message is 15-60k chars)."""
+    return {
+        "ok": True,
+        "new_id": moved.get("id"),
+        "parent_folder_id": moved.get("parentFolderId"),
+        "subject": moved.get("subject"),
+    }
+
+
+async def _resolve_destination(client: Any, destination: str) -> tuple[str | None, dict | None]:
+    """Resolve a destination folder reference; returns ``(folder_id, None)`` or ``(None, error_payload)``."""
+    try:
+        return await resolve_folder_reference(client, destination), None
+    except FOLDER_RESOLUTION_ERRORS as e:
+        return None, folder_error_payload(e)
+
+
+async def move_email(ctx: Context, message_id: str, destination_folder_id: str, compact: bool = True) -> str:
     """Move a message to a different mail folder. Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
 
-    Use ``list_folders`` to discover folder IDs.
+    ``destination_folder_id``: folder id, well-known name (``archive``), display name, or path
+    (``"Auto/DMARC"``). ``compact`` (default) returns ``{ok, new_id, parent_folder_id, subject}``;
+    ``compact=False`` returns the full moved message as Graph sends it.
     """
     s = get_settings()
     if not s.enable_write_operations:
@@ -426,9 +451,14 @@ async def move_email(ctx: Context, message_id: str, destination_folder_id: str) 
     except (GraphTokenExpiredError, GraphTokenMissingError) as e:
         return json.dumps(tool_error_token(e))
 
-    await tool_log_info(ctx, f"move_email: message_id={message_id!r} dest={destination_folder_id!r}")
     try:
-        moved = await client.move_message(message_id, destination_folder_id)
+        dest_id, folder_error = await _resolve_destination(client, destination_folder_id)
+        if folder_error:
+            return json.dumps(folder_error)
+        await tool_log_info(ctx, f"move_email: message_id={message_id!r} dest={dest_id!r}")
+        moved = await client.move_message(message_id, dest_id)
+        if compact:
+            return json.dumps(compact_moved_message(moved))
         return json.dumps({"ok": True, "message": moved}, indent=2)
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"move_email: http_error status={e.response.status_code}")
@@ -442,6 +472,149 @@ async def move_email(ctx: Context, message_id: str, destination_folder_id: str) 
     except httpx.HTTPError as e:
         await tool_log_warning(ctx, f"move_email: network_error {type(e).__name__}")
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+def _batch_error(outcome: BatchOutcome) -> str | None:
+    msg = outcome_error_message(outcome)
+    return sanitize_client_error_message(msg, max_len=300) if msg else None
+
+
+def _batch_summary(items: list[dict[str, Any]]) -> dict[str, int]:
+    ok = sum(1 for i in items if i["status"] and 200 <= i["status"] < 300)
+    return {"total": len(items), "succeeded": ok, "failed": len(items) - ok}
+
+
+async def move_emails(ctx: Context, message_ids: list[str], destination_folder_id: str) -> str:
+    """Move many messages via Graph JSON ``$batch`` (20 per batch, throttling-aware retries).
+
+    Returns ``{"ok", "destination_folder_id", "summary": {total, succeeded, failed},
+    "results": [{old_id, new_id, status, error}]}`` — no message bodies.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {"error": "write_disabled", "message": "Set ENABLE_WRITE_OPERATIONS=true to enable move_emails."}
+        )
+    if not isinstance(message_ids, list) or not message_ids:
+        return json.dumps({"error": "validation_error", "message": "message_ids must be a non-empty list."})
+    if len(message_ids) > _MAX_BATCH_ITEMS:
+        return json.dumps(
+            {"error": "validation_error", "message": f"At most {_MAX_BATCH_ITEMS} message_ids per call."}
+        )
+    if not all(isinstance(m, str) and m.strip() for m in message_ids):
+        return json.dumps({"error": "validation_error", "message": "Each message id must be a non-empty string."})
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    try:
+        dest_id, folder_error = await _resolve_destination(client, destination_folder_id)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"move_emails: folder lookup http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+    if folder_error:
+        return json.dumps(folder_error)
+
+    # Duplicated ids would collide as $batch request ids; move each message once.
+    unique_ids = list(dict.fromkeys(m.strip() for m in message_ids))
+    requests = [
+        {
+            "id": str(i),
+            "method": "POST",
+            "url": f"{client.message_path(mid)}/move",
+            "body": {"destinationId": dest_id},
+            "headers": {"Content-Type": "application/json"},
+        }
+        for i, mid in enumerate(unique_ids)
+    ]
+    await tool_log_info(ctx, f"move_emails: count={len(unique_ids)} dest={dest_id!r}")
+    await tool_report_progress(ctx, 10, 100, message=f"move_emails: {len(unique_ids)} message(s)")
+    # move is not idempotent: only retry 429 (guaranteed not executed), never 503/504.
+    outcomes = await run_graph_batch(client, requests, retry_statuses=THROTTLE_ONLY_STATUSES)
+    await tool_report_progress(ctx, 100, 100, message="move_emails: complete")
+
+    results: list[dict[str, Any]] = []
+    for i, mid in enumerate(unique_ids):
+        o = outcomes.get(str(i), BatchOutcome(0))
+        body = o.body if isinstance(o.body, dict) else {}
+        results.append(
+            {
+                "old_id": mid,
+                "new_id": body.get("id") if o.ok else None,
+                "status": o.status,
+                "error": _batch_error(o),
+            }
+        )
+    summary = _batch_summary(results)
+    return json.dumps(
+        {"ok": summary["failed"] == 0, "destination_folder_id": dest_id, "summary": summary, "results": results}
+    )
+
+
+async def set_messages_categories(ctx: Context, items: list[dict[str, Any]]) -> str:
+    """Set categories on many messages via Graph ``$batch`` (each item replaces that message's categories).
+
+    ``items``: ``[{"message_id": str, "categories": [str, ...]}, ...]``. Returns
+    ``{"ok", "summary", "results": [{message_id, status, error}]}``.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable set_messages_categories (requires Mail.ReadWrite).",
+            }
+        )
+    if not isinstance(items, list) or not items:
+        return json.dumps({"error": "validation_error", "message": "items must be a non-empty list."})
+    if len(items) > _MAX_BATCH_ITEMS:
+        return json.dumps({"error": "validation_error", "message": f"At most {_MAX_BATCH_ITEMS} items per call."})
+    for idx, item in enumerate(items):
+        mid = item.get("message_id") if isinstance(item, dict) else None
+        if not isinstance(mid, str) or not mid.strip():
+            return json.dumps(
+                {"error": "validation_error", "message": f"items[{idx}].message_id must be a non-empty string."}
+            )
+        invalid = _validate_categories(item.get("categories"))
+        if invalid:
+            return json.dumps({"error": "validation_error", "message": f"items[{idx}]: {invalid}"})
+
+    try:
+        client = make_graph_client(ctx)
+    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+        return json.dumps(tool_error_token(e))
+
+    requests = [
+        {
+            "id": str(i),
+            "method": "PATCH",
+            "url": client.message_path(item["message_id"]),
+            "body": {"categories": [c.strip() for c in item["categories"]]},
+            "headers": {"Content-Type": "application/json"},
+        }
+        for i, item in enumerate(items)
+    ]
+    await tool_log_info(ctx, f"set_messages_categories: count={len(items)}")
+    await tool_report_progress(ctx, 10, 100, message=f"set_messages_categories: {len(items)} message(s)")
+    outcomes = await run_graph_batch(client, requests)
+    await tool_report_progress(ctx, 100, 100, message="set_messages_categories: complete")
+
+    results = []
+    for i, item in enumerate(items):
+        o = outcomes.get(str(i), BatchOutcome(0))
+        results.append({"message_id": item["message_id"].strip(), "status": o.status, "error": _batch_error(o)})
+    summary = _batch_summary(results)
+    return json.dumps({"ok": summary["failed"] == 0, "summary": summary, "results": results})
 
 
 async def create_mail_folder(

@@ -10,6 +10,29 @@ import httpx
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
+# Graph well-known mail folder names (usable in place of an id in URL paths and ``destinationId``).
+WELL_KNOWN_MAIL_FOLDERS = frozenset(
+    {
+        "archive",
+        "clutter",
+        "conflicts",
+        "conversationhistory",
+        "deleteditems",
+        "drafts",
+        "inbox",
+        "junkemail",
+        "localfailures",
+        "msgfolderroot",
+        "outbox",
+        "recoverableitemsdeletions",
+        "scheduled",
+        "searchfolders",
+        "sentitems",
+        "serverfailures",
+        "syncissues",
+    }
+)
+
 
 def _importance_rank(importance: str | None) -> int:
     """Numeric rank for sorting (higher = more important). Unknown or missing → normal."""
@@ -545,3 +568,113 @@ class GraphMailClient:
                 r = await c.post(f"{base}/mailFolders", json=payload)
             r.raise_for_status()
             return r.json()
+
+    async def get_mail_folder(self, folder_id: str, *, select: str | None = "id,displayName") -> dict[str, Any]:
+        """GET one mail folder by Graph id or well-known name (``inbox``, ``archive``, ...)."""
+        enc = _encode_mail_folder_id_for_path(folder_id)
+        base = self._user_prefix()
+        params = {"$select": select} if select else None
+        async with self._client() as c:
+            r = await c.get(f"{base}/mailFolders/{enc}", params=params)
+            r.raise_for_status()
+            return r.json()
+
+    async def resolve_mail_folder_path(self, path: str) -> str:
+        """Return the Graph ``id`` for a slash-separated folder path such as ``"Auto/DMARC"``.
+
+        The first segment is either a well-known folder name (``inbox/Auto``) or a display name
+        resolved anywhere in the tree (must be unique, as in
+        ``resolve_mail_folder_id_by_display_name``). Each following segment must be a direct
+        child of the previous folder (case-insensitive ``displayName``).
+        """
+        segments = [s.strip() for s in (path or "").split("/") if s.strip()]
+        if not segments:
+            raise ValueError("folder path must be a non-empty string")
+
+        first = segments[0]
+        if first.casefold() in WELL_KNOWN_MAIL_FOLDERS:
+            current_id = (await self.get_mail_folder(first)).get("id") or first
+        else:
+            current_id = await self.resolve_mail_folder_id_by_display_name(first)
+
+        base = self._user_prefix()
+        walked = [first]
+        async with self._client() as c:
+            for seg in segments[1:]:
+                walked.append(seg)
+                enc = _encode_mail_folder_id_for_path(current_id)
+                r = await c.get(f"{base}/mailFolders/{enc}/childFolders", params={"$top": "999"})
+                r.raise_for_status()
+                hits = [
+                    f["id"]
+                    for f in r.json().get("value") or []
+                    if (f.get("displayName") or "").strip().casefold() == seg.casefold() and f.get("id")
+                ]
+                if not hits:
+                    raise MailFolderNotFoundError("/".join(walked))
+                if len(hits) > 1:
+                    raise MailFolderAmbiguousError("/".join(walked), len(hits))
+                current_id = hits[0]
+        return current_id
+
+    def message_path(self, message_id: str) -> str:
+        """Version-relative ``/me/messages/{id}`` path (also the ``url`` form used inside ``$batch``)."""
+        return f"{self._user_prefix()}/messages/{_encode_message_id_for_path(message_id)}"
+
+    async def batch(self, requests: list[dict[str, Any]]) -> dict[str, Any]:
+        """POST ``/$batch`` (JSON batching, max 20 sub-requests). Returns ``{"responses": [...]}``.
+
+        Raises ``httpx.HTTPStatusError`` only when the batch envelope itself fails; per-request
+        failures (including 429 throttling) come back as sub-response statuses.
+        """
+        async with self._client() as c:
+            r = await c.post("/$batch", json={"requests": requests})
+            r.raise_for_status()
+            return r.json()
+
+    def _message_rules_path(self) -> str:
+        return f"{self._user_prefix()}/mailFolders/inbox/messageRules"
+
+    async def list_message_rules(self) -> dict[str, Any]:
+        """Inbox rules (``messageRule``); requires ``MailboxSettings.Read`` or ``.ReadWrite``."""
+        async with self._client() as c:
+            r = await c.get(self._message_rules_path())
+            r.raise_for_status()
+            return r.json()
+
+    async def create_message_rule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._client() as c:
+            r = await c.post(self._message_rules_path(), json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    async def update_message_rule(self, rule_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        enc = quote(rule_id.strip(), safe="")
+        async with self._client() as c:
+            r = await c.patch(f"{self._message_rules_path()}/{enc}", json=payload)
+            r.raise_for_status()
+            return r.json() if r.content else {}
+
+    async def delete_message_rule(self, rule_id: str) -> None:
+        enc = quote(rule_id.strip(), safe="")
+        async with self._client() as c:
+            r = await c.delete(f"{self._message_rules_path()}/{enc}")
+            r.raise_for_status()
+
+    async def create_master_category(self, display_name: str, color: str) -> dict[str, Any]:
+        """POST ``/outlook/masterCategories``; requires ``MailboxSettings.ReadWrite``."""
+        base = self._user_prefix()
+        async with self._client() as c:
+            r = await c.post(
+                f"{base}/outlook/masterCategories",
+                json={"displayName": display_name, "color": color},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def delete_master_category(self, category_id: str) -> None:
+        base = self._user_prefix()
+        enc = quote(category_id.strip(), safe="")
+        async with self._client() as c:
+            r = await c.delete(f"{base}/outlook/masterCategories/{enc}")
+            r.raise_for_status()

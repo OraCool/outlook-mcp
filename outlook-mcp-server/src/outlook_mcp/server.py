@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ContentBlock
@@ -10,7 +11,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from outlook_mcp.config import get_settings
-from outlook_mcp.tools import email_classifier, email_drafter, email_extractor, email_reader, email_summarizer, email_writer
+from outlook_mcp.tools import (
+    email_classifier,
+    email_drafter,
+    email_extractor,
+    email_reader,
+    email_summarizer,
+    email_writer,
+    mailbox_settings,
+)
 
 
 def build_mcp() -> MCPServer:
@@ -377,12 +386,168 @@ def build_mcp() -> MCPServer:
         )
 
     @mcp.tool()
-    async def move_email(ctx: Context, message_id: str, destination_folder_id: str) -> str:
+    async def move_email(ctx: Context, message_id: str, destination_folder_id: str, compact: bool = True) -> str:
         """Move a message to a different mail folder (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite).
 
-        Use ``list_folders`` to discover folder IDs.
+        ``destination_folder_id`` accepts a folder id (from ``list_folders``), a well-known name
+        (``archive``, ``deleteditems``, ``junkemail``, ...), a display name (unique, case-insensitive)
+        or a path such as ``"Auto/DMARC"``.
+
+        ``compact`` (default true) returns only ``{ok, new_id, parent_folder_id, subject}`` —
+        moving changes the message id, so keep ``new_id``. ``compact=false`` returns the whole
+        moved message including its body (tens of thousands of characters). For more than a
+        couple of messages use ``move_emails``.
         """
-        return await email_writer.move_email(ctx, message_id, destination_folder_id)
+        return await email_writer.move_email(ctx, message_id, destination_folder_id, compact=compact)
+
+    @mcp.tool()
+    async def move_emails(ctx: Context, message_ids: list[str], destination_folder_id: str) -> str:
+        """Move many messages to one folder in a few Graph ``$batch`` calls (requires ENABLE_WRITE_OPERATIONS=true).
+
+        Up to 1000 ids per call; sent 20 per batch with throttling-aware retries (429 /
+        MailboxConcurrency honour ``Retry-After``). ``destination_folder_id`` accepts the same forms
+        as ``move_email`` (id, well-known name, display name, ``"Parent/Child"`` path).
+
+        Returns ``{"ok", "destination_folder_id", "summary": {total, succeeded, failed},
+        "results": [{old_id, new_id, status, error}]}`` — never message bodies. ``ok`` is false
+        if any message failed; retry just the failed ``old_id`` values.
+        """
+        return await email_writer.move_emails(ctx, message_ids, destination_folder_id)
+
+    @mcp.tool()
+    async def set_messages_categories(ctx: Context, items: list[dict[str, Any]]) -> str:
+        """Set categories on many messages in Graph ``$batch`` calls (requires ENABLE_WRITE_OPERATIONS=true).
+
+        ``items``: ``[{"message_id": "...", "categories": ["DMARC", "Auto"]}, ...]`` (up to 1000).
+        Each item *replaces* that message's categories. Returns ``{"ok", "summary",
+        "results": [{message_id, status, error}]}``.
+        """
+        return await email_writer.set_messages_categories(ctx, items)
+
+    @mcp.tool()
+    async def list_message_rules(ctx: Context) -> str:
+        """List Inbox rules: id, displayName, sequence, isEnabled, conditions, actions, exceptions.
+
+        Requires delegated ``MailboxSettings.Read`` (or ``MailboxSettings.ReadWrite``).
+        """
+        return await mailbox_settings.list_message_rules(ctx)
+
+    @mcp.tool()
+    async def create_message_rule(
+        ctx: Context,
+        display_name: str,
+        sequence: int,
+        conditions: dict[str, Any],
+        actions: dict[str, Any],
+        exceptions: dict[str, Any] | None = None,
+        is_enabled: bool = True,
+    ) -> str:
+        """Create an Inbox rule (Graph ``messageRule``). Requires ENABLE_WRITE_OPERATIONS=true and
+        delegated ``MailboxSettings.ReadWrite`` (add it to GRAPH_OAUTH_SCOPES).
+
+        ``sequence``: execution order, lower runs first (>= 1).
+
+        ``conditions`` / ``exceptions`` — ``messageRulePredicates``. Common keys:
+        ``senderContains``, ``subjectContains``, ``bodyContains``, ``bodyOrSubjectContains``,
+        ``headerContains``, ``recipientContains`` (each a string or list of strings — all matched
+        as substrings); ``fromAddresses`` / ``sentToAddresses`` (list of plain email strings is
+        fine, converted to Graph recipients); booleans such as ``sentToMe``, ``sentOnlyToMe``,
+        ``sentCcMe``, ``hasAttachments``, ``isAutomaticReply``; ``importance`` (``low``/``normal``/``high``).
+        Unknown keys are rejected before calling Graph.
+
+        ``actions`` — ``messageRuleActions``: ``moveToFolder`` / ``copyToFolder`` (folder id,
+        well-known name, display name, or path like ``"Auto/DMARC"``), ``assignCategories``
+        (list of master category names), ``markAsRead``, ``markImportance``, ``delete``,
+        ``stopProcessingRules``, ``forwardTo`` / ``redirectTo`` (email strings).
+
+        Example — DMARC reports into a folder, stop further rules::
+
+            display_name="DMARC reports", sequence=1,
+            conditions={"subjectContains": ["Report domain:"]},
+            actions={"moveToFolder": "Auto/DMARC", "assignCategories": ["DMARC"],
+                     "markAsRead": true, "stopProcessingRules": true}
+
+        Graph validation errors come back as ``graph_code`` / ``graph_message``.
+        """
+        return await mailbox_settings.create_message_rule(
+            ctx,
+            display_name=display_name,
+            sequence=sequence,
+            conditions=conditions,
+            actions=actions,
+            exceptions=exceptions,
+            is_enabled=is_enabled,
+        )
+
+    @mcp.tool()
+    async def update_message_rule(
+        ctx: Context,
+        rule_id: str,
+        display_name: str | None = None,
+        sequence: int | None = None,
+        conditions: dict[str, Any] | None = None,
+        actions: dict[str, Any] | None = None,
+        exceptions: dict[str, Any] | None = None,
+        is_enabled: bool | None = None,
+    ) -> str:
+        """Update an Inbox rule (PATCH). Only the fields you pass change — e.g. ``is_enabled=false``
+        to switch a rule off, or a new ``sequence``. Passing ``conditions`` / ``actions`` /
+        ``exceptions`` replaces that whole object (same shapes as ``create_message_rule``).
+        Requires ENABLE_WRITE_OPERATIONS=true and ``MailboxSettings.ReadWrite``.
+        """
+        return await mailbox_settings.update_message_rule(
+            ctx,
+            rule_id,
+            display_name=display_name,
+            sequence=sequence,
+            conditions=conditions,
+            actions=actions,
+            exceptions=exceptions,
+            is_enabled=is_enabled,
+        )
+
+    @mcp.tool()
+    async def delete_message_rule(ctx: Context, rule_id: str) -> str:
+        """Delete an Inbox rule by id (from ``list_message_rules``). Requires ENABLE_WRITE_OPERATIONS=true
+        and ``MailboxSettings.ReadWrite``.
+        """
+        return await mailbox_settings.delete_message_rule(ctx, rule_id)
+
+    @mcp.tool()
+    async def create_master_category(ctx: Context, display_name: str, color: str = "preset0") -> str:
+        """Create an Outlook master category. Requires ENABLE_WRITE_OPERATIONS=true and
+        ``MailboxSettings.ReadWrite``.
+
+        ``display_name`` must be unique and **cannot be renamed later through Graph** (only the
+        color is mutable) — to rename, create a new category and delete the old one.
+
+        ``color``: ``preset0``..``preset24``, ``none``, or the color name below (case-insensitive):
+
+        | preset | color | preset | color |
+        |---|---|---|---|
+        | preset0 | Red | preset13 | DarkGray |
+        | preset1 | Orange | preset14 | Black |
+        | preset2 | Brown | preset15 | DarkRed |
+        | preset3 | Yellow | preset16 | DarkOrange |
+        | preset4 | Green | preset17 | DarkBrown |
+        | preset5 | Teal | preset18 | DarkYellow |
+        | preset6 | Olive | preset19 | DarkGreen |
+        | preset7 | Blue | preset20 | DarkTeal |
+        | preset8 | Purple | preset21 | DarkOlive |
+        | preset9 | Cranberry | preset22 | DarkBlue |
+        | preset10 | Steel | preset23 | DarkPurple |
+        | preset11 | DarkSteel | preset24 | DarkCranberry |
+        | preset12 | Gray | | |
+        """
+        return await mailbox_settings.create_master_category(ctx, display_name, color=color)
+
+    @mcp.tool()
+    async def delete_master_category(ctx: Context, category_id: str) -> str:
+        """Delete an Outlook master category by id (from ``list_master_categories``). Messages keep the
+        category name string; it just loses its color. Requires ENABLE_WRITE_OPERATIONS=true and
+        ``MailboxSettings.ReadWrite``.
+        """
+        return await mailbox_settings.delete_master_category(ctx, category_id)
 
     @mcp.tool()
     async def create_mail_folder(

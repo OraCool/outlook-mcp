@@ -8,6 +8,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from mcp.types import CreateMessageResultWithTools, TextContent
 
 from outlook_mcp.auth.graph_client import GraphMailClient
@@ -330,3 +331,30 @@ def parse_json_object(text: str) -> dict[str, Any]:
         msg = f"{msg} Preview: {prev!r}"
     err = ValueError(msg)
     raise err from last_err
+
+
+def graph_http_error_payload(e: httpx.HTTPStatusError, *, hint: str | None = None) -> dict[str, Any]:
+    """``{"error": "http_error", ...}`` with Graph's ``error.code`` / ``error.message`` pulled out.
+
+    Graph answers a bad rule predicate or category color with a 400 whose JSON body buries the
+    reason in ``error.message``; surfacing it as ``graph_message`` lets the agent fix the call.
+    ``hint`` (e.g. a missing-scope note) is attached only on 401/403.
+    """
+    status = e.response.status_code
+    payload: dict[str, Any] = {
+        "error": "http_error",
+        "status_code": status,
+        "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+    }
+    try:
+        err = (e.response.json() or {}).get("error") or {}
+    except ValueError:
+        err = {}
+    if isinstance(err, dict):
+        if err.get("code"):
+            payload["graph_code"] = str(err["code"])
+        if err.get("message"):
+            payload["graph_message"] = sanitize_client_error_message(str(err["message"]), max_len=1000)
+    if hint and status in (401, 403):
+        payload["hint"] = hint
+    return payload
