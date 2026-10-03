@@ -40,3 +40,16 @@ def test_attachment_settings_overridable() -> None:
     assert s.max_attachment_upload_bytes == 1024
     assert s.max_attachment_count == 2
     assert s.max_multimodal_attachment_bytes == 512
+
+
+def test_mailbox_settings_scope_is_opt_in_and_passed_through() -> None:
+    """Not auto-added with writes: the token cache is looked up with exactly this list, so a new
+    implicit scope would force every existing write-enabled install to sign in again."""
+    from outlook_mcp.config import oauth_scope_list
+
+    plain = oauth_scope_list(Settings(graph_oauth_scopes="Mail.Read", enable_write_operations=True))
+    assert "MailboxSettings.ReadWrite" not in plain
+    explicit = oauth_scope_list(
+        Settings(graph_oauth_scopes="Mail.Read MailboxSettings.ReadWrite", enable_write_operations=True)
+    )
+    assert explicit == ["Mail.Read", "MailboxSettings.ReadWrite", "Mail.Send", "Mail.ReadWrite"]

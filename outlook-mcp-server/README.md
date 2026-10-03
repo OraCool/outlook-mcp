@@ -4,9 +4,9 @@ MCP server for **Microsoft Outlook / Microsoft Graph** mail operations. It suppo
 
 ## Features
 
-- **Read tools**: `get_email`, `get_thread` (by Graph `conversationId`; sorted by `receivedDateTime` in the server to avoid Graph **`InefficientFilter`** on `$filter`+`$orderby`), `search_emails` (KQL + optional read/date filters), `list_inbox` (optional folder, unread, received date filters), `list_folders`, `get_attachments` (metadata only), `get_attachment_content` (downloads one attachment as native multimodal content for the model to look at — an `ImageContent` block for images by default, an `EmbeddedResource` blob otherwise; `as_resource=true` forces `EmbeddedResource` even for images, with `mimeType` deliberately masked as generic binary since MCP clients render an `image/*` mimeType inline and truncate the response before the base64 reaches the model as text; attachments over **`MAX_MULTIMODAL_ATTACHMENT_BYTES`**, default 8MB, return a metadata-only error instead), `list_master_categories`
+- **Read tools**: `get_email`, `get_thread` (by Graph `conversationId`; sorted by `receivedDateTime` in the server to avoid Graph **`InefficientFilter`** on `$filter`+`$orderby`), `search_emails` (KQL + optional read/date filters), `list_inbox` (optional folder, unread, received date filters), `list_folders`, `get_attachments` (metadata only), `get_attachment_content` (downloads one attachment as native multimodal content for the model to look at — an `ImageContent` block for images by default, an `EmbeddedResource` blob otherwise; `as_resource=true` forces `EmbeddedResource` even for images, with `mimeType` deliberately masked as generic binary since MCP clients render an `image/*` mimeType inline and truncate the response before the base64 reaches the model as text; attachments over **`MAX_MULTIMODAL_ATTACHMENT_BYTES`**, default 8MB, return a metadata-only error instead), `list_master_categories`, `list_message_rules`
 - **AI tools** (MCP sampling): `categorize_email` (**read-only** — does not change Outlook), `extract_email_data` — fall back if the client does not support sampling
-- **Write tools** (optional): `send_email`, `send_draft_email`, `create_draft`, `create_mail_folder`, `move_email`, `mark_as_read`, `create_reply_draft`, `set_message_categories`, `apply_llm_category_to_email` (classify via sampling **then** PATCH categories — needs successful sampling + **`ENABLE_WRITE_OPERATIONS=true`**), `save_attachment_to_path` (writes an attachment directly to local disk — the reliable way to save one, since routing bytes through a tool response hits context/token limits and image content gets rendered/truncated by MCP clients before the base64 is usable) — disabled unless `ENABLE_WRITE_OPERATIONS=true`. Many production setups keep writes off and send mail from a separate service; enable writes only when you intend this process to call Graph send/category APIs directly (or, for `save_attachment_to_path`, to write to the local filesystem). Category updates require **`Mail.ReadWrite`** (added automatically to OAuth scopes when writes are enabled). See **`categorize_email` vs `apply_llm_category_to_email` vs `set_message_categories`** below.
+- **Write tools** (optional): `send_email`, `send_draft_email`, `create_draft`, `create_mail_folder`, `move_email` (compact response by default), `move_emails` and `set_messages_categories` (Graph `$batch`, throttling-aware), `mark_as_read`, `create_reply_draft`, `set_message_categories`, `create_message_rule` / `update_message_rule` / `delete_message_rule` (Inbox rules), `create_master_category` / `delete_master_category`, `apply_llm_category_to_email` (classify via sampling **then** PATCH categories — needs successful sampling + **`ENABLE_WRITE_OPERATIONS=true`**), `save_attachment_to_path` (writes an attachment directly to local disk — the reliable way to save one, since routing bytes through a tool response hits context/token limits and image content gets rendered/truncated by MCP clients before the base64 is usable) — disabled unless `ENABLE_WRITE_OPERATIONS=true`. Many production setups keep writes off and send mail from a separate service; enable writes only when you intend this process to call Graph send/category APIs directly (or, for `save_attachment_to_path`, to write to the local filesystem). Category updates require **`Mail.ReadWrite`** (added automatically to OAuth scopes when writes are enabled). See **`categorize_email` vs `apply_llm_category_to_email` vs `set_message_categories`** below.
   - `send_email`, `create_draft`, and `create_reply_draft` accept an optional `attachments` list (`{"filename", "content_type", "content_base64", "file_path", "is_inline"}` per file — exactly one of `content_base64`/`file_path`). **Prefer `file_path`**: the server reads the file itself from local disk, so the calling model just passes a short path instead of transcribing the whole file as base64 text — for anything beyond a trivial file, having the model generate that content character-by-character as a tool argument is slow and error-prone (one wrong token corrupts the file). `filename` defaults to the path's basename when `file_path` is used. Small files (≤3MB) attach inline; larger files (up to Graph's ~150MB ceiling) go through a chunked upload session — for `send_email` this means a transparent draft-then-send fallback (`used_draft_path: true` in the response) since Graph's one-shot `sendMail` has no message id to attach large files to before sending. Per-call limits (`MAX_ATTACHMENT_COUNT`, `MAX_ATTACHMENT_UPLOAD_BYTES`) are configurable.
 - **Transports**: **`stdio`** (local tools and IDE integrations) and **`streamable-http`** (HTTP MCP behind a reverse proxy or in containers)
 - **Auth**: `X-Graph-Token` (delegated **or** application JWT); optional **`X-Graph-Mailbox`** / **`GRAPH_APPLICATION_MAILBOX`** for application mode; **`GRAPH_AUTH_MODE=application`** + app registration env for **client_credentials**; optional **OAuth** (`/oauth/login` + `X-OAuth-Session`, or `outlook-mcp-oauth-device` + `GRAPH_OAUTH_TOKEN_CACHE_PATH`); or **`GRAPH_DEV_TOKEN`** for local dev. See **Token handling** below.
@@ -29,6 +29,7 @@ MCP server for **Microsoft Outlook / Microsoft Graph** mail operations. It suppo
   - **`MailboxSettings.Read`** for **`list_master_categories`** (Outlook master category list). Without it, that tool returns HTTP 403 from Graph.
   - **`Mail.Send`** for `send_email` / `create_draft` when `ENABLE_WRITE_OPERATIONS=true`
   - **`Mail.ReadWrite`** for `set_message_categories` and `apply_llm_category_to_email` when `ENABLE_WRITE_OPERATIONS=true` (OAuth scope list adds it alongside `Mail.Send` when writes are enabled)
+  - **`MailboxSettings.ReadWrite`** for Inbox rules (`list_message_rules` also works with `MailboxSettings.Read`) and for `create_master_category` / `delete_master_category`. **Not added automatically** — put it in **`GRAPH_OAUTH_SCOPES`** yourself (see [Inbox rules and master categories](#inbox-rules-and-master-categories)).
 - **Application** tokens (client credentials or gateway-issued app JWT): use **application** permissions in Entra ID (e.g. **`Mail.Read`**, **`Mail.Send`**, **`Mail.ReadWrite`** as **Application** roles — admin consent). The server calls **`/users/{mailbox}/...`**; you must supply the mailbox via **`X-Graph-Mailbox`** (Streamable HTTP) or **`GRAPH_APPLICATION_MAILBOX`** (stdio / default).
 
 **Search:** `search_emails` expects a [KQL](https://learn.microsoft.com/en-us/graph/search-query-parameter) string (mailbox search, eventual consistency). Optional **`read_filter`** (`any`, `read`, `unread`) and **`received_on` / `received_after` / `received_before`** (UTC dates, `YYYY-MM-DD`) are combined into the query; the tool returns **`effective_query`**.
@@ -38,6 +39,8 @@ MCP server for **Microsoft Outlook / Microsoft Graph** mail operations. It suppo
 - **`list_folders`** — Lists mail folders (`id`, `displayName`, item counts). Use returned **`id`** values when a tool requires a folder id, or rely on **name resolution** below.
 - **`list_inbox`** — Lists messages in a folder (default: Inbox). Specify the folder with **`folder_id`** (Graph id or well-known name such as `inbox`, `sentitems`, `drafts`, `archive`) **or** **`folder_name`** (case-insensitive **`displayName`**; resolved via Graph). Do **not** set both `folder_id` and `folder_name`. Optional **`unread_only`**, and **`received_on`** (single UTC calendar day) or **`received_after` / `received_before`** (OData datetimes). If name resolution finds no folder or more than one match, the tool returns **`folder_not_found`** or **`folder_ambiguous`**.
 - **`create_mail_folder`** (requires **`ENABLE_WRITE_OPERATIONS=true`**) — Creates a folder at the mailbox root or under a parent. Parent may be **`parent_folder_id`** **or** **`parent_folder_name`** (same resolution rules as `list_inbox`); do not set both. Successful responses may include **`resolved_parent_folder_id`** when **`parent_folder_name`** was used.
+
+**Folder references** for `move_email`, `move_emails` and a rule's `moveToFolder` / `copyToFolder` accept any of: a Graph folder id, a well-known name (`archive`, `deleteditems`, `junkemail`, `inbox`, …), a unique display name, or a **path** such as `Auto/DMARC` (first segment: a well-known name or a unique display name anywhere in the tree; each next segment: a direct child). Ids are recognised by shape (long base64, no spaces), so a path containing `/` is not confused with an id that happens to contain one.
 
 Name resolution walks the visible folder tree (root **`mailFolders`**, then **`childFolders`** per folder) with a bounded number of Graph requests. For unusual trees or duplicate display names, use **`list_folders`** and pass explicit ids.
 
@@ -90,7 +93,7 @@ See [`.env.example`](.env.example). Important variables:
 | `GRAPH_APPLICATION_MAILBOX`                                       | Default mailbox (UPN or object id) for **`/users/...`** when **`X-Graph-Mailbox`** is not sent (required for application mode without that header)                                                                                                                                                                                                                                 |
 | `GRAPH_ALLOW_CLIENT_SECRET_HEADER`                                | `true` allows **`X-Graph-Client-Secret`** on HTTP requests (dev only; default false)                                                                                                                                                                                                                                                                                               |
 | `GRAPH_OAUTH_*`                                                   | See **OAuth** below (`GRAPH_OAUTH_ENABLED`, `CLIENT_ID`, optional `CLIENT_SECRET`, `TENANT`, `REDIRECT_URI`, `SCOPES`, `TOKEN_CACHE_PATH`)                                                                                                                                                                                                                                         |
-| `ENABLE_WRITE_OPERATIONS`                                         | `true` to enable write tools (`send_email`, `send_draft_email`, `create_draft`, `create_mail_folder`, `move_email`, `mark_as_read`, `create_reply_draft`, `set_message_categories`, `apply_llm_category_to_email`, `save_attachment_to_path`; adds `Mail.Send` and `Mail.ReadWrite` to default OAuth scopes when using OAuth)                                                                                                      |
+| `ENABLE_WRITE_OPERATIONS`                                         | `true` to enable write tools (`send_email`, `send_draft_email`, `create_draft`, `create_mail_folder`, `move_email`, `move_emails`, `mark_as_read`, `create_reply_draft`, `set_message_categories`, `set_messages_categories`, `apply_llm_category_to_email`, `create_message_rule`, `update_message_rule`, `delete_message_rule`, `create_master_category`, `delete_master_category`, `save_attachment_to_path`; adds `Mail.Send` and `Mail.ReadWrite` to default OAuth scopes when using OAuth — **not** `MailboxSettings.ReadWrite`, list that in `GRAPH_OAUTH_SCOPES`)                                                                                                      |
 | `MAX_ATTACHMENT_COUNT`                                            | Max attachments accepted per `send_email` / `create_draft` / `create_reply_draft` call (default `10`)                                                                                                                                                                                                                                                                              |
 | `MAX_ATTACHMENT_UPLOAD_BYTES`                                     | Max decoded size for a single outgoing attachment (default `157286400`, ~150MB — Graph's practical ceiling for chunked upload sessions)                                                                                                                                                                                                                                            |
 | `MAX_MULTIMODAL_ATTACHMENT_BYTES`                                 | Max decoded size `get_attachment_content` will inline as an `ImageContent`/`EmbeddedResource` block (default `8388608`, 8MB — base64 inflates ~33% and becomes LLM context; larger attachments get a metadata-only response instead)                                                                                                                                              |
@@ -347,7 +350,7 @@ Graph identity is resolved **on every tool call** from the MCP request context (
 
 For a **single-process** server (default; not multiple replicas without a shared session store):
 
-1. Register an app in [Entra ID](https://entra.microsoft.com/) with **delegated** Graph permissions (`Mail.Read`, `offline_access`; add **`Mail.Send`** and **`Mail.ReadWrite`** if writes are enabled (category updates need **`Mail.ReadWrite`**); add **`MailboxSettings.Read`** if you use **`list_master_categories`**). Allow **personal Microsoft accounts** and/or organizational accounts as needed.
+1. Register an app in [Entra ID](https://entra.microsoft.com/) with **delegated** Graph permissions (`Mail.Read`, `offline_access`; add **`Mail.Send`** and **`Mail.ReadWrite`** if writes are enabled (category updates need **`Mail.ReadWrite`**); add **`MailboxSettings.Read`** if you use **`list_master_categories`**, or **`MailboxSettings.ReadWrite`** for Inbox rules / creating master categories). Allow **personal Microsoft accounts** and/or organizational accounts as needed.
 2. Add a **web** redirect URI matching `GRAPH_OAUTH_REDIRECT_URI` (e.g. `http://127.0.0.1:8000/oauth/callback`).
 3. Set `GRAPH_OAUTH_ENABLED=true`, `GRAPH_OAUTH_CLIENT_ID`, optional `GRAPH_OAUTH_CLIENT_SECRET` (confidential app), and `GRAPH_OAUTH_TENANT` (`common`, `organizations`, `consumers`, or a tenant id).
 4. Run streamable-http, open **`http://<host>:<port>/oauth/login`**, complete sign-in.
@@ -393,6 +396,49 @@ Mitigations in this server:
 - **Size limits and HTML** — Bodies are truncated before prompting; HTML bodies are reduced to plain text to limit hidden-text tricks.
 - **Output checks** — Sampling JSON is parsed and validated; `email_id` must match the requested message. Unknown classification categories are coerced to **`UNCLASSIFIED`** with capped confidence; string fields have maximum lengths.
 
+### Bulk moves and compact responses
+
+`move_email` returns only `{ok, new_id, parent_folder_id, subject}` by default (`compact=false` restores the full moved message, body included — 15–60k characters per call). Moving changes the message id: keep `new_id`.
+
+For triage of many messages use **`move_emails(message_ids, destination_folder_id)`** and **`set_messages_categories(items=[{message_id, categories}])`**. Both use Graph [JSON batching](https://learn.microsoft.com/en-us/graph/json-batching): up to 1000 items per call, 20 sub-requests per `$batch`, at most two batches in flight. Sub-requests answered **429** (incl. `MailboxConcurrency`), **503** or **504** are retried — only those, after the largest `Retry-After` Graph sent, otherwise exponential backoff — up to 5 attempts. `move_emails` retries **only 429**: a 503/504 does not prove the move did not happen, and re-sending it would 404 on the now-stale id (such items are reported as failed — check the destination folder). The response is a compact list (`{old_id, new_id, status, error}` / `{message_id, status, error}`) plus `summary: {total, succeeded, failed}`.
+
+### Inbox rules and master categories
+
+Tools: `list_message_rules`, `create_message_rule`, `update_message_rule`, `delete_message_rule`, `create_master_category`, `delete_master_category` (Graph [`messageRule`](https://learn.microsoft.com/en-us/graph/api/resources/messagerule), [`outlookCategory`](https://learn.microsoft.com/en-us/graph/api/resources/outlookcategory)).
+
+**Scope:** delegated **`MailboxSettings.ReadWrite`**. Unlike `Mail.Send` / `Mail.ReadWrite`, it is **not** appended automatically when `ENABLE_WRITE_OPERATIONS=true`, because cached tokens are looked up with exactly the configured scope list — an implicit new scope would force every existing install to sign in again. To enable:
+
+1. Entra ID → your app → **API permissions** → add delegated **`MailboxSettings.ReadWrite`**.
+2. `GRAPH_OAUTH_SCOPES=Mail.Read MailboxSettings.ReadWrite` (plus anything else you already use).
+3. Sign in again with the **same** `GRAPH_OAUTH_TOKEN_CACHE_PATH` the server uses (`outlook-mcp-oauth-device`), so the device login and the server request the same scope list.
+
+Without it Graph returns 403; the tool response then includes a `hint` naming the missing scope.
+
+**Rule conditions / actions** use Graph's `messageRulePredicates` / `messageRuleActions` names. Conveniences: string-list predicates (`subjectContains`, `senderContains`, …) accept a single string; `fromAddresses` / `sentToAddresses` / `forwardTo` / `redirectTo` accept plain email strings; `moveToFolder` / `copyToFolder` accept any folder reference (see above) and are resolved to an id before the rule is created. Unknown keys are rejected locally with the list of valid ones; Graph's own 400s come back with `graph_code` / `graph_message`.
+
+Example — file DMARC aggregate reports and stop processing further rules:
+
+```json
+{
+  "display_name": "DMARC reports",
+  "sequence": 1,
+  "conditions": {
+    "fromAddresses": ["noreply-dmarc-support@google.com", "dmarcreport@microsoft.com"],
+    "subjectContains": ["Report domain:"]
+  },
+  "actions": {
+    "moveToFolder": "Auto/DMARC",
+    "assignCategories": ["DMARC"],
+    "markAsRead": true,
+    "stopProcessingRules": true
+  }
+}
+```
+
+Switch it off later with `update_message_rule(rule_id=..., is_enabled=false)`.
+
+**Master categories:** `create_master_category(display_name, color)` — `color` is `preset0`…`preset24`, `none`, or a color name (`Red`, `DarkBlue`, …; full table in the tool description). Graph cannot rename a master category (only its color is mutable): create a new one and delete the old.
+
 **Operational:** Do not drive high-risk actions (payments, irreversible sends, ERP writes) solely from LLM classification or extraction without **human review** or **rules**. Do not log full email bodies or prompts in production.
 
 ## Tests
@@ -410,3 +456,5 @@ uv run pytest
 - [Microsoft Graph Mail API overview](https://learn.microsoft.com/en-us/graph/api/resources/mail-api-overview?view=graph-rest-1.0)
 - [Use the $search query parameter (mailbox / KQL)](https://learn.microsoft.com/en-us/graph/search-query-parameter)
 - [List masterCategories](https://learn.microsoft.com/en-us/graph/api/outlookuser-list-mastercategories)
+- [messageRule resource](https://learn.microsoft.com/en-us/graph/api/resources/messagerule)
+- [JSON batching](https://learn.microsoft.com/en-us/graph/json-batching) and [Outlook throttling limits](https://learn.microsoft.com/en-us/graph/throttling-limits#outlook-service-limits)

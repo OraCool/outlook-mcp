@@ -21,6 +21,9 @@ from outlook_mcp.tools.email_writer import (
     set_message_categories,
 )
 
+# Realistic Exchange folder id: long base64 (may contain "/"), so it is not mistaken for a name/path.
+_FOLDER_ID = "AAMkADAwATM0MDAAMS1iNWQ3LTI2ODQtMDACLTAwCgAuAAADdV/Xk+gw1E2DmyqP1nTd8gEA" + "A" * 20 + "="
+
 _SMALL_ATTACHMENT = {"filename": "a.txt", "content_type": "text/plain", "content_base64": "aGVsbG8="}
 
 
@@ -318,10 +321,10 @@ async def test_move_email_success() -> None:
     mock_client.move_message = AsyncMock(return_value={"id": "m1", "subject": "S"})
     with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
         with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
-            result = await move_email(ctx=None, message_id="m1", destination_folder_id="fid")
+            result = await move_email(ctx=None, message_id="m1", destination_folder_id=_FOLDER_ID)
     data = json.loads(result)
     assert data["ok"] is True
-    mock_client.move_message.assert_awaited_once_with("m1", "fid")
+    mock_client.move_message.assert_awaited_once_with("m1", _FOLDER_ID)
 
 
 @pytest.mark.asyncio
@@ -335,7 +338,7 @@ async def test_move_email_http_error() -> None:
     )
     with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_SettingsEnabled()):
         with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=mock_client):
-            result = await move_email(ctx=None, message_id="m1", destination_folder_id="fid")
+            result = await move_email(ctx=None, message_id="m1", destination_folder_id="archive")
     data = json.loads(result)
     assert data["error"] == "http_error"
     assert data["status_code"] == 400
