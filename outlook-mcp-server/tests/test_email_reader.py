@@ -1220,7 +1220,7 @@ async def test_save_attachment_to_path_creates_missing_parent_dirs(tmp_path) -> 
         }
     )
     mock_client.get_attachment_raw_bytes = AsyncMock(return_value=(b"hello", "text/plain"))
-    target = tmp_path / "Подписанные" / "Kalko" / "a.txt"
+    target = tmp_path / "Signed" / "Smith" / "a.txt"
     with (
         patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
         patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=mock_client),
