@@ -386,6 +386,105 @@ Follow the browser/device instructions. Then set `GRAPH_OAUTH_TOKEN_CACHE_PATH` 
 
 If consent or the request fails, confirm the signed-in user is the mailbox you expect and that the selected permissions match the operation (personal tenants have no “admin consent” step for your own account beyond the prompt shown in Graph Explorer).
 
+## Cloud application mode (managed identity)
+
+Run the server unattended (for example in Azure Container Apps) with no stored secrets: it reads mail
+with **application permissions**, authenticates to Microsoft Graph and Azure Blob Storage with a
+**user-assigned managed identity**, and can be narrowed to a handful of read-oriented tools.
+
+Prerequisites: a user-assigned managed identity attached to the host; the Graph application role
+`Mail.Read` (and `Mail.ReadWrite` only if you enable write tools) granted to that identity, ideally
+restricted to specific mailboxes with an Exchange Online application access policy; and, for attachment
+storage, the `Storage Blob Data Contributor` role on the target container.
+
+| Variable | Description |
+| -------- | ----------- |
+| `GRAPH_AUTH_MODE` | Must be `application` for managed identity. |
+| `GRAPH_APPLICATION_CREDENTIAL` | `client_secret` (default) or `managed_identity`. With `managed_identity` the token comes from the host identity endpoint (`IDENTITY_ENDPOINT` / `IDENTITY_HEADER`, set by Azure). Tool calls return `configuration_error` if `GRAPH_AUTH_MODE` is not `application`. |
+| `AZURE_CLIENT_ID` | Client id of the user-assigned managed identity. |
+| `GRAPH_APPLICATION_MAILBOX` | Default mailbox when no `X-Graph-Mailbox` header is sent. |
+| `GRAPH_ALLOWED_MAILBOXES` | Comma-separated mailboxes (case-insensitive) application mode may access; anything else returns `mailbox_not_allowed`. Required (non-empty) whenever `GRAPH_APPLICATION_CREDENTIAL=managed_identity` (header trust does not matter); optional with `client_secret` (multi-mailbox use). |
+| `GRAPH_TRUST_REQUEST_HEADERS` | Default `true`. Set `false` behind a gateway or in a public deployment: `X-Graph-Token`, `X-OAuth-Session`, `X-Graph-Auth-Mode` and `X-Graph-Client-Secret` are then ignored. `X-Graph-Mailbox` is still honoured, so pair this with an allowlist. |
+| `MCP_ENABLED_TOOLS` | Comma-separated allowlist of tool names; empty = every tool the configuration allows. Unknown names are a startup error. |
+| `MCP_DISABLED_TOOLS` | Comma-separated tools to remove; applied last and always wins. Unknown names are a startup error. |
+| `ENABLE_WRITE_OPERATIONS` | Must be `true` for `save_attachment_to_storage` (and other write tools). Listing a write tool in `MCP_ENABLED_TOOLS` while this is `false` is a startup error. |
+| `ATTACHMENT_STORAGE` | `azure_blob` enables `save_attachment_to_storage`; empty (default) disables it. |
+| `ATTACHMENT_BLOB_CONTAINER_URL` | `https://<account>.blob.core.windows.net/<container>`. |
+| `ATTACHMENT_ALLOWED_PREFIXES` | Comma-separated key prefixes the tool may write under (matched on whole path segments); empty = any key. |
+| `ATTACHMENT_TEXT_MAX_BYTES` | Largest PDF `get_attachment_text` will download and parse (default `15000000`). |
+| `ATTACHMENT_TEXT_MAX_PAGES` | Pages extracted per PDF (default `200`); beyond it the result is marked truncated. |
+| `ATTACHMENT_TEXT_TIMEOUT_SECONDS` | Wall-clock bound for extraction (default `30`); on timeout the result is `unreadable`. |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, applied to the root and `outlook_mcp` loggers at startup. Empty (default) leaves logging unchanged. Use `WARNING` in production. |
+
+Fail-closed rules: `managed_identity` requires `GRAPH_AUTH_MODE=application` and a non-empty
+`GRAPH_ALLOWED_MAILBOXES` (whatever `GRAPH_TRUST_REQUEST_HEADERS` is). `client_secret` is unchanged: without an
+allowlist it can serve any mailbox the app registration is granted. Errors are returned as
+`mailbox_not_allowed`, `managed_identity_error` or `configuration_error` payloads.
+
+Example (a read-only deployment; sending is excluded):
+
+```bash
+MCP_TRANSPORT=streamable-http
+MCP_HOST=0.0.0.0
+GRAPH_AUTH_MODE=application
+GRAPH_APPLICATION_CREDENTIAL=managed_identity
+AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000000
+GRAPH_TRUST_REQUEST_HEADERS=false
+GRAPH_ALLOWED_MAILBOXES=billing@contoso.com
+GRAPH_APPLICATION_MAILBOX=billing@contoso.com
+ENABLE_WRITE_OPERATIONS=true
+MCP_DISABLED_TOOLS=send_email,send_draft_email
+ATTACHMENT_STORAGE=azure_blob
+ATTACHMENT_BLOB_CONTAINER_URL=https://contosostorage.blob.core.windows.net/attachments
+ATTACHMENT_ALLOWED_PREFIXES=Contracts/
+LOG_LEVEL=WARNING
+```
+
+Sending can be excluded with `MCP_DISABLED_TOOLS` (as above); disabled tools are not registered, so a
+client cannot call them even though `ENABLE_WRITE_OPERATIONS=true`.
+
+### `save_attachment_to_storage`
+
+Writes one message attachment to the configured private blob container using the managed identity (no
+keys). The result `{"ok": true, "queued": true, ...}` means the write was **queued**, not that it is
+delivered or visible yet. Writing to a key that is still pending overwrites it. Nothing about the key, file
+name or content is logged. It requires `GRAPH_TRUST_REQUEST_HEADERS=false`: the storage write uses the
+server's own identity, so the Graph identity must be the server's own too (otherwise any caller with a
+header token could make the server write to its storage). With trusted headers it returns
+`configuration_error`. The `key` is the blob name (`/` separates folders) and is validated:
+
+- Unicode is normalized to NFC; names are kept as given otherwise (Cyrillic and spaces are fine).
+- Refused: an absolute key (leading `/`), `..` or `.` segments, backslashes, empty segments (`//`),
+  control, format and bidirectional-override characters, characters that fold to `/` or `.` under NFKC
+  (confusables), a leading or trailing space in any segment, a segment ending in `.` (so a folder named
+  `Ltd.` is refused; use `Ltd`), and keys longer than 1024 characters.
+- With `ATTACHMENT_ALLOWED_PREFIXES`, the key must sit under one of the prefixes, compared segment by
+  segment (`Contracts/` does not match `Contracts-old/x.pdf`).
+
+### `get_attachment_text`
+
+Extracts text from a PDF attachment (`pypdf`). `max_chars` is clamped to 1 .. 1,000,000. Oversized,
+non-PDF, encrypted or malformed files return a short error (`too_large`, `not_pdf`, `unreadable`) with no
+file name or content in logs.
+
+Extraction runs on a dedicated pool of 2 threads, so slow PDFs never block other tools. When
+`ATTACHMENT_TEXT_TIMEOUT_SECONDS` elapses, the call returns `unreadable`. A timed-out extraction cannot be
+cancelled and **keeps running in the background until it finishes** (bounded by `ATTACHMENT_TEXT_MAX_BYTES`
+and `ATTACHMENT_TEXT_MAX_PAGES`), and it keeps its pool slot until then. If both slots stay busy for the
+whole timeout, the next call also returns `unreadable`.
+
+### Logging
+
+Tool logs carry tool names, status, counts and truncated ids only. Subjects, addresses, bodies,
+attachment and storage names, search queries, and rule, category and folder names are not written to logs at
+INFO or above. A test (`tests/test_no_content_in_logs.py`) checks this for `list_inbox`, `get_email`,
+`search_emails`, `get_attachment_content`, `get_attachment_text`, `save_attachment_to_storage`,
+`create_reply_draft`, `create_mail_folder`, `mark_as_read`, `set_message_categories`, `move_email` and the
+rule and master-category write tools; other tools follow the same convention but are not individually
+tested. `httpx`/`httpcore` are kept at `WARNING` (their request lines would include blob keys) and `pypdf` at
+`ERROR`. DEBUG logging from third-party libraries may include content, so keep `LOG_LEVEL` at `WARNING` or
+above in production.
+
 ## Security: email content and LLM sampling
 
 Mail **subject**, **body**, and **preview** are **untrusted** input. Tools that call the host LLM via **MCP sampling** (`categorize_email`, `extract_email_data`) embed that content in prompts. **Prompt injection cannot be eliminated** by wording alone; treat model output as **advisory**.

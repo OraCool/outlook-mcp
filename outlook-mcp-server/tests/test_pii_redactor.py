@@ -166,8 +166,8 @@ def test_redact_email_json_deterministic_fallback_masks_email_and_name(monkeypat
     monkeypatch.setattr(redactor_mod, "_get_analyzer", lambda: None)
     d = {
         "subject": "Hi from user@example.com",
-        "body_preview": "Call lithuania2@leinonen.eu today",
-        "from": {"address": "lithuania2@leinonen.eu", "name": "Leinonen Lithuania 2"},
+        "body_preview": "Call accountant@fabrikam.com today",
+        "from": {"address": "accountant@fabrikam.com", "name": "Fabrikam Accounting"},
         "to_recipients": [{"address": "z@z.com", "name": "Z"}],
     }
     out = redactor_mod.redact_email_json(
@@ -179,7 +179,7 @@ def test_redact_email_json_deterministic_fallback_masks_email_and_name(monkeypat
     )
     blob = str(out)
     assert "example.com" not in blob
-    assert "leinonen.eu" not in blob
+    assert "fabrikam.com" not in blob
     assert out["from"]["name"] == "[REDACTED]"
     assert out["from"]["address"] == "[EMAIL_REDACTED]"
     assert out["to_recipients"][0]["name"] == "[REDACTED]"

@@ -11,6 +11,8 @@ import jwt
 import msal
 from starlette.requests import Request
 
+from outlook_mcp.auth.managed_identity import ManagedIdentityError, get_managed_identity_token
+
 if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
 
@@ -32,6 +34,25 @@ class GraphTokenMissingError(Exception):
 
 class GraphMailboxMissingError(Exception):
     """Raised when an application token is used but no mailbox was provided."""
+
+
+class GraphConfigurationError(Exception):
+    """Raised when the server's Graph auth settings are inconsistent or unsafe."""
+
+
+class GraphMailboxNotAllowedError(Exception):
+    """Raised when the requested mailbox is not in GRAPH_ALLOWED_MAILBOXES."""
+
+
+# Every auth/config error a tool maps to a documented payload via ``tool_error_token``.
+GRAPH_AUTH_ERRORS: tuple[type[Exception], ...] = (
+    GraphTokenExpiredError,
+    GraphTokenMissingError,
+    GraphMailboxMissingError,
+    GraphMailboxNotAllowedError,
+    GraphConfigurationError,
+    ManagedIdentityError,
+)
 
 
 def _header_token(request: Request | None, name: str) -> str | None:
@@ -111,14 +132,20 @@ def _ensure_not_expired(token: str) -> None:
 
 def _resolve_mailbox(settings: Any, request: Request | None) -> str:
     mb = _mailbox_header(request)
-    if mb:
-        return mb
-    env_mb = (getattr(settings, "graph_application_mailbox", None) or "").strip()
-    if env_mb:
-        return env_mb
-    raise GraphMailboxMissingError(
-        "Application Graph mode requires X-Graph-Mailbox header or GRAPH_APPLICATION_MAILBOX env var."
-    )
+    if not mb:
+        mb = (getattr(settings, "graph_application_mailbox", None) or "").strip()
+    if not mb:
+        raise GraphMailboxMissingError(
+            "Application Graph mode requires X-Graph-Mailbox header or GRAPH_APPLICATION_MAILBOX env var."
+        )
+    allowed = {
+        m.strip().lower()
+        for m in (getattr(settings, "graph_allowed_mailboxes", "") or "").split(",")
+        if m.strip()
+    }
+    if allowed and mb.lower() not in allowed:
+        raise GraphMailboxNotAllowedError("Mailbox is not allowed by GRAPH_ALLOWED_MAILBOXES.")
+    return mb
 
 
 def _token_from_msal_file_cache(settings: Any) -> tuple[str, int] | None:
@@ -170,7 +197,11 @@ def _acquire_client_credentials_token(settings: Any, request: Request | None) ->
     client_id = (getattr(settings, "graph_application_client_id", None) or "").strip()
     sec_obj = getattr(settings, "graph_application_client_secret", None)
     secret = sec_obj.get_secret_value().strip() if sec_obj is not None else ""
-    if getattr(settings, "graph_allow_client_secret_header", False) and request is not None:
+    if (
+        getattr(settings, "graph_allow_client_secret_header", False)
+        and getattr(settings, "graph_trust_request_headers", True)
+        and request is not None
+    ):
         hdr = request.headers.get("x-graph-client-secret") or request.headers.get("X-Graph-Client-Secret")
         if hdr and str(hdr).strip():
             secret = str(hdr).strip()
@@ -239,7 +270,19 @@ def resolve_graph_access_token(ctx: Context | None) -> tuple[str, int, str | Non
             request = None
 
     settings = get_settings()
-    mode_hdr = _auth_mode_header(request)
+    trust_headers = getattr(settings, "graph_trust_request_headers", True)
+    use_mi = getattr(settings, "graph_application_credential", "client_secret") == "managed_identity"
+    if use_mi:
+        if getattr(settings, "graph_auth_mode", "delegated") != "application":
+            raise GraphConfigurationError(
+                "GRAPH_APPLICATION_CREDENTIAL=managed_identity requires GRAPH_AUTH_MODE=application."
+            )
+        # The host identity can usually reach every mailbox the app is granted: always fail closed.
+        if not (getattr(settings, "graph_allowed_mailboxes", "") or "").strip():
+            raise GraphConfigurationError(
+                "GRAPH_ALLOWED_MAILBOXES must be set when GRAPH_APPLICATION_CREDENTIAL=managed_identity."
+            )
+    mode_hdr = _auth_mode_header(request) if trust_headers else None
 
     def finish_bearer(token: str) -> tuple[str, int, str | None]:
         _ensure_not_expired(token)
@@ -250,29 +293,35 @@ def resolve_graph_access_token(ctx: Context | None) -> tuple[str, int, str | Non
             return token, exp, mb
         return token, exp, None
 
-    header_tok = _header_token(request, "x-graph-token")
+    header_tok = _header_token(request, "x-graph-token") if trust_headers else None
     if header_tok:
         return finish_bearer(header_tok)
 
-    oauth_hdr = _header_token(request, "x-oauth-session")
+    oauth_hdr = _header_token(request, "x-oauth-session") if trust_headers else None
     if oauth_hdr and getattr(settings, "graph_oauth_enabled", False):
         from outlook_mcp.auth.oauth_session import get_oauth_session_store
 
         tok, exp = get_oauth_session_store().get_valid_access_token(oauth_hdr, settings)
         return tok, exp, None
 
-    cached = _token_from_msal_file_cache(settings)
+    cached = None if use_mi else _token_from_msal_file_cache(settings)
     if cached:
         tok, exp = cached
         return tok, exp, None
 
-    if settings.graph_dev_token:
+    if settings.graph_dev_token and not use_mi:
         dev = settings.graph_dev_token.get_secret_value().strip()
         if dev.lower().startswith(_BEARER_PREFIX):
             dev = dev[7:].strip()
         return finish_bearer(dev)
 
     if _wants_client_credentials(settings, mode_hdr):
+        if use_mi:
+            tok, exp = get_managed_identity_token(
+                "https://graph.microsoft.com",
+                client_id=getattr(settings, "azure_client_id", "") or "",
+            )
+            return tok, exp, _resolve_mailbox(settings, request)
         tok, exp = _acquire_client_credentials_token(settings, request)
         mb = _resolve_mailbox(settings, request)
         return tok, exp, mb

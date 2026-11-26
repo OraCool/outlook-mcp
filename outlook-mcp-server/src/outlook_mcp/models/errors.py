@@ -25,3 +25,9 @@ MISSING_MAILBOX_PAYLOAD: dict[str, str] = {
         "GRAPH_APPLICATION_MAILBOX (env)."
     ),
 }
+
+MAILBOX_NOT_ALLOWED_PAYLOAD: dict[str, str] = {
+    "error": "mailbox_not_allowed",
+    "code": "ERR_GRAPH_MAILBOX_NOT_ALLOWED",
+    "message": "The requested mailbox is not permitted by this server's GRAPH_ALLOWED_MAILBOXES setting.",
+}

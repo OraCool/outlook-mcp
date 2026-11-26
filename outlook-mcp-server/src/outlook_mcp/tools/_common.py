@@ -12,14 +12,18 @@ import httpx
 from mcp.types import CreateMessageResultWithTools, TextContent
 
 from outlook_mcp.auth.graph_client import GraphMailClient
+from outlook_mcp.auth.managed_identity import ManagedIdentityError
 from outlook_mcp.auth.token_handler import (
+    GraphConfigurationError,
     GraphMailboxMissingError,
+    GraphMailboxNotAllowedError,
     GraphTokenExpiredError,
     GraphTokenMissingError,
     resolve_graph_access_token,
 )
 from outlook_mcp.models.email import EmailAddress, EmailMessage
 from outlook_mcp.models.errors import (
+    MAILBOX_NOT_ALLOWED_PAYLOAD,
     MISSING_MAILBOX_PAYLOAD,
     MISSING_TOKEN_PAYLOAD,
     TOKEN_EXPIRED_PAYLOAD,
@@ -156,6 +160,12 @@ def tool_error_token(e: Exception) -> dict[str, Any]:
         return dict(MISSING_TOKEN_PAYLOAD)
     if isinstance(e, GraphMailboxMissingError):
         return dict(MISSING_MAILBOX_PAYLOAD)
+    if isinstance(e, GraphMailboxNotAllowedError):
+        return dict(MAILBOX_NOT_ALLOWED_PAYLOAD)
+    if isinstance(e, ManagedIdentityError):
+        return {"error": "managed_identity_error", "message": sanitize_client_error_message(str(e))}
+    if isinstance(e, GraphConfigurationError):
+        return {"error": "configuration_error", "message": sanitize_client_error_message(str(e))}
     return {"error": "graph_error", "message": sanitize_client_error_message(str(e))}
 
 

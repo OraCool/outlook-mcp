@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from mcp.types import SamplingMessage, TextContent
 
-from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
+from outlook_mcp.auth.token_handler import GRAPH_AUTH_ERRORS
 from outlook_mcp.config import get_settings
 from outlook_mcp.pii.redactor import anonymize_email_json_if_enabled, restore_text
 from outlook_mcp.tools._common import (
@@ -83,7 +83,7 @@ async def draft_reply(
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     await tool_log_info(ctx, f"draft_reply: start message_id={pid}")

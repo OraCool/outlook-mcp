@@ -119,3 +119,68 @@ def test_parse_json_object_invalid_json_omits_preview_for_long_response() -> Non
     with pytest.raises(ValueError) as exc_info:
         parse_json_object(raw)
     assert "Preview:" not in str(exc_info.value)
+
+
+def test_tool_error_token_new_payloads() -> None:
+    from outlook_mcp.auth.managed_identity import ManagedIdentityError
+    from outlook_mcp.auth.token_handler import GraphConfigurationError, GraphMailboxNotAllowedError
+    from outlook_mcp.tools._common import tool_error_token
+
+    assert tool_error_token(GraphMailboxNotAllowedError("x"))["error"] == "mailbox_not_allowed"
+    p = tool_error_token(ManagedIdentityError("Managed identity token request failed: HTTP 400"))
+    assert p["error"] == "managed_identity_error"
+    assert "HTTP 400" in p["message"]
+    assert tool_error_token(GraphConfigurationError("bad config"))["error"] == "configuration_error"
+
+
+_AUTH_CASES = [
+    ("GraphMailboxNotAllowedError", "mailbox_not_allowed"),
+    ("GraphConfigurationError", "configuration_error"),
+    ("ManagedIdentityError", "managed_identity_error"),
+    ("GraphMailboxMissingError", "missing_mailbox"),
+]
+
+_TOOL_CASES = [
+    ("outlook_mcp.tools.email_reader", "get_email", ("m1",)),
+    ("outlook_mcp.tools.email_extractor", "extract_email_data", ("m1",)),
+    ("outlook_mcp.tools.email_summarizer", "summarize_email", ("m1",)),
+    ("outlook_mcp.tools.email_classifier", "categorize_email", ("m1",)),
+    ("outlook_mcp.tools.mailbox_settings", "list_message_rules", ()),
+]
+
+
+@pytest.mark.parametrize(("exc_name", "code"), _AUTH_CASES)
+@pytest.mark.parametrize(("module", "tool", "args"), _TOOL_CASES)
+async def test_tools_return_documented_auth_payloads(exc_name, code, module, tool, args) -> None:
+    import importlib
+    import json
+    from unittest.mock import patch
+
+    from outlook_mcp.auth import managed_identity, token_handler
+
+    exc_cls = getattr(token_handler, exc_name, None) or getattr(managed_identity, exc_name)
+    mod = importlib.import_module(module)
+    with patch(f"{module}.make_graph_client", side_effect=exc_cls("boom")):
+        out = json.loads(await getattr(mod, tool)(*args, ctx=None))
+    assert out["error"] == code
+
+
+def test_graph_auth_errors_covers_all_payload_types() -> None:
+    from outlook_mcp.auth.managed_identity import ManagedIdentityError
+    from outlook_mcp.auth.token_handler import (
+        GRAPH_AUTH_ERRORS,
+        GraphConfigurationError,
+        GraphMailboxMissingError,
+        GraphMailboxNotAllowedError,
+        GraphTokenExpiredError,
+        GraphTokenMissingError,
+    )
+
+    assert set(GRAPH_AUTH_ERRORS) == {
+        GraphTokenExpiredError,
+        GraphTokenMissingError,
+        GraphMailboxMissingError,
+        GraphMailboxNotAllowedError,
+        GraphConfigurationError,
+        ManagedIdentityError,
+    }

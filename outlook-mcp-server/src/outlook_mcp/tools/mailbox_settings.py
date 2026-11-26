@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from outlook_mcp.auth.graph_client import GraphMailClient
-from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
+from outlook_mcp.auth.token_handler import GRAPH_AUTH_ERRORS
 from outlook_mcp.config import get_settings
 from outlook_mcp.tools._common import (
     graph_http_error_payload,
@@ -23,7 +23,7 @@ from outlook_mcp.tools._common import (
     tool_error_token,
 )
 from outlook_mcp.tools._folders import FOLDER_RESOLUTION_ERRORS, folder_error_payload, resolve_folder_reference
-from outlook_mcp.tools._notify import tool_log_info, tool_log_warning
+from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
@@ -228,7 +228,7 @@ async def list_message_rules(ctx: Context) -> str:
     """List Inbox rules (id, displayName, sequence, isEnabled, conditions, actions, exceptions)."""
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, "list_message_rules: start")
     try:
@@ -261,7 +261,7 @@ async def create_message_rule(
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     try:
@@ -283,7 +283,7 @@ async def create_message_rule(
     except httpx.HTTPError as e:
         return await _network_error(ctx, "create_message_rule", e)
 
-    await tool_log_info(ctx, f"create_message_rule: display_name={display_name!r} sequence={sequence}")
+    await tool_log_info(ctx, f"create_message_rule: sequence={sequence}")
     try:
         created = await client.create_message_rule(payload)
         return json.dumps({"ok": True, "rule": _rule_summary(created)}, indent=2)
@@ -311,7 +311,7 @@ async def update_message_rule(
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     try:
@@ -335,7 +335,7 @@ async def update_message_rule(
     if not payload:
         return json.dumps({"error": "validation_error", "message": "Nothing to update: pass at least one field."})
 
-    await tool_log_info(ctx, f"update_message_rule: rule_id={rule_id!r} fields={sorted(payload)}")
+    await tool_log_info(ctx, f"update_message_rule: rule_id={_preview(rule_id)} fields={sorted(payload)}")
     try:
         updated = await client.update_message_rule(rule_id, payload)
         return json.dumps({"ok": True, "rule": _rule_summary(updated) if updated else {"id": rule_id}}, indent=2)
@@ -353,9 +353,9 @@ async def delete_message_rule(ctx: Context, rule_id: str) -> str:
         return json.dumps({"error": "validation_error", "message": "rule_id must be a non-empty string."})
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
-    await tool_log_info(ctx, f"delete_message_rule: rule_id={rule_id!r}")
+    await tool_log_info(ctx, f"delete_message_rule: rule_id={_preview(rule_id)}")
     try:
         await client.delete_message_rule(rule_id)
         return json.dumps({"ok": True, "deleted_rule_id": rule_id})
@@ -423,9 +423,9 @@ async def create_master_category(ctx: Context, display_name: str, color: str = "
         return json.dumps({"error": "validation_error", "message": str(e)})
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
-    await tool_log_info(ctx, f"create_master_category: display_name={display_name!r} color={preset}")
+    await tool_log_info(ctx, f"create_master_category: color={preset}")
     try:
         created = await client.create_master_category(display_name.strip(), preset)
         return json.dumps({"ok": True, "category": created})
@@ -443,9 +443,9 @@ async def delete_master_category(ctx: Context, category_id: str) -> str:
         return json.dumps({"error": "validation_error", "message": "category_id must be a non-empty string."})
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
-    await tool_log_info(ctx, f"delete_master_category: category_id={category_id!r}")
+    await tool_log_info(ctx, f"delete_master_category: category_id={_preview(category_id)}")
     try:
         await client.delete_master_category(category_id)
         return json.dumps({"ok": True, "deleted_category_id": category_id})
