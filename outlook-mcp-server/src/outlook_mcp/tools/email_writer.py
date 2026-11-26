@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from outlook_mcp.auth.graph_client import MailFolderAmbiguousError, MailFolderNotFoundError
-from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
+from outlook_mcp.auth.token_handler import GRAPH_AUTH_ERRORS
 from outlook_mcp.config import get_settings
 from outlook_mcp.tools._attachments import (
     attach_files_to_message,
@@ -24,7 +24,7 @@ from outlook_mcp.tools._attachments import (
 from outlook_mcp.tools._batch import THROTTLE_ONLY_STATUSES, BatchOutcome, outcome_error_message, run_graph_batch
 from outlook_mcp.tools._common import make_graph_client, sanitize_client_error_message, tool_error_token
 from outlook_mcp.tools._folders import FOLDER_RESOLUTION_ERRORS, folder_error_payload, resolve_folder_reference
-from outlook_mcp.tools._notify import tool_log_info, tool_log_warning, tool_report_progress
+from outlook_mcp.tools._notify import _preview, tool_log_info, tool_log_warning, tool_report_progress
 from outlook_mcp.tools.mail_query_params import graph_flag_for_patch, graph_importance_for_patch
 
 if TYPE_CHECKING:
@@ -68,11 +68,11 @@ async def set_message_categories(ctx: Context, message_id: str, categories: list
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     trimmed = [c.strip() for c in categories]
-    await tool_log_info(ctx, f"set_message_categories: start message_id={message_id!r} count={len(trimmed)}")
+    await tool_log_info(ctx, f"set_message_categories: start message_id={_preview(message_id)} count={len(trimmed)}")
     await tool_report_progress(ctx, 20, 100, message="set_message_categories: start")
     try:
         await tool_report_progress(ctx, 60, 100, message="set_message_categories: calling Graph")
@@ -141,7 +141,7 @@ async def send_email(
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"send_email: start recipients={len(to_addresses)}")
     await tool_report_progress(ctx, 20, 100, message="send_email: start")
@@ -227,10 +227,10 @@ async def send_draft_email(ctx: Context, draft_id: str) -> str:
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
-    await tool_log_info(ctx, f"send_draft_email: start draft_id={draft_id!r}")
+    await tool_log_info(ctx, f"send_draft_email: start draft_id={_preview(draft_id)}")
     await tool_report_progress(ctx, 20, 100, message="send_draft_email: start")
     try:
         await tool_report_progress(ctx, 60, 100, message="send_draft_email: calling Graph messages/{id}/send")
@@ -283,7 +283,7 @@ async def create_draft(
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, "create_draft: start")
     await tool_report_progress(ctx, 20, 100, message="create_draft: start")
@@ -348,10 +348,10 @@ async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> s
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
-    await tool_log_info(ctx, f"mark_as_read: message_id={message_id!r} is_read={is_read}")
+    await tool_log_info(ctx, f"mark_as_read: message_id={_preview(message_id)} is_read={is_read}")
     try:
         await client.update_message(message_id, {"isRead": is_read})
         return json.dumps({"ok": True, "message_id": message_id, "is_read": is_read})
@@ -391,10 +391,10 @@ async def set_email_priority(ctx: Context, message_id: str, priority: str) -> st
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
-    await tool_log_info(ctx, f"set_email_priority: message_id={message_id!r} importance={importance!r}")
+    await tool_log_info(ctx, f"set_email_priority: message_id={_preview(message_id)} importance={importance!r}")
     await tool_report_progress(ctx, 20, 100, message="set_email_priority: start")
     try:
         await tool_report_progress(ctx, 60, 100, message="set_email_priority: calling Graph")
@@ -448,14 +448,14 @@ async def move_email(ctx: Context, message_id: str, destination_folder_id: str, 
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     try:
         dest_id, folder_error = await _resolve_destination(client, destination_folder_id)
         if folder_error:
             return json.dumps(folder_error)
-        await tool_log_info(ctx, f"move_email: message_id={message_id!r} dest={dest_id!r}")
+        await tool_log_info(ctx, f"move_email: message_id={_preview(message_id)} dest={_preview(dest_id)}")
         moved = await client.move_message(message_id, dest_id)
         if compact:
             return json.dumps(compact_moved_message(moved))
@@ -506,7 +506,7 @@ async def move_emails(ctx: Context, message_ids: list[str], destination_folder_i
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     try:
@@ -537,7 +537,7 @@ async def move_emails(ctx: Context, message_ids: list[str], destination_folder_i
         }
         for i, mid in enumerate(unique_ids)
     ]
-    await tool_log_info(ctx, f"move_emails: count={len(unique_ids)} dest={dest_id!r}")
+    await tool_log_info(ctx, f"move_emails: count={len(unique_ids)} dest={_preview(dest_id)}")
     await tool_report_progress(ctx, 10, 100, message=f"move_emails: {len(unique_ids)} message(s)")
     # move is not idempotent: only retry 429 (guaranteed not executed), never 503/504.
     outcomes = await run_graph_batch(client, requests, retry_statuses=THROTTLE_ONLY_STATUSES)
@@ -591,7 +591,7 @@ async def set_messages_categories(ctx: Context, items: list[dict[str, Any]]) -> 
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     requests = [
@@ -653,7 +653,7 @@ async def create_mail_folder(
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     effective_parent_id = parent_folder_id
@@ -688,7 +688,7 @@ async def create_mail_folder(
 
     await tool_log_info(
         ctx,
-        f"create_mail_folder: display_name={display_name!r} parent_folder_id={effective_parent_id!r}",
+        f"create_mail_folder: parent_set={effective_parent_id is not None}",
     )
     try:
         created = await client.create_mail_folder(
@@ -741,10 +741,10 @@ async def create_reply_draft(
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
-    await tool_log_info(ctx, f"create_reply_draft: message_id={message_id!r}")
+    await tool_log_info(ctx, f"create_reply_draft: message_id={_preview(message_id)}")
     try:
         draft = await client.create_reply(message_id, comment=comment, content_type=content_type)
         result: dict = {"ok": True, "message": draft}
@@ -827,10 +827,10 @@ async def set_message_flag(
 
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
-    await tool_log_info(ctx, f"set_message_flag: message_id={message_id!r} status={flag['flagStatus']!r}")
+    await tool_log_info(ctx, f"set_message_flag: message_id={_preview(message_id)} status={flag['flagStatus']!r}")
     await tool_report_progress(ctx, 20, 100, message="set_message_flag: start")
     try:
         await tool_report_progress(ctx, 60, 100, message="set_message_flag: calling Graph")

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from mcp.types import SamplingMessage, TextContent
 
-from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
+from outlook_mcp.auth.token_handler import GRAPH_AUTH_ERRORS
 from outlook_mcp.config import get_settings
 from outlook_mcp.models.email import ExtractionResult
 from outlook_mcp.pii.redactor import anonymize_email_json_if_enabled, restore_text
@@ -50,7 +50,7 @@ async def extract_email_data(message_id: str, ctx: Context) -> str:
     pid = _preview(message_id)
     try:
         g = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"extract_email_data: start message_id={pid}")
     await tool_report_progress(ctx, 5, 100, message="extract_email_data: fetching from Graph")

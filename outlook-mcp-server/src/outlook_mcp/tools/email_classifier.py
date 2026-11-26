@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from mcp.types import SamplingMessage, TextContent
 
 from outlook_mcp.auth.graph_client import GraphMailClient
-from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
+from outlook_mcp.auth.token_handler import GRAPH_AUTH_ERRORS
 from outlook_mcp.config import get_settings
 from outlook_mcp.models.email import DEFAULT_CLASSIFICATION_CATEGORIES, ClassificationResult
 from outlook_mcp.pii.redactor import redact_email_json_if_enabled
@@ -172,7 +172,7 @@ async def categorize_email(message_id: str, ctx: Context) -> str:
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"categorize_email: start message_id={pid}")
     out = await _classify_message_via_sampling(message_id, ctx, client, log_prefix="categorize_email")
@@ -213,7 +213,7 @@ async def apply_llm_category_to_email(message_id: str, ctx: Context) -> str:
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"apply_llm_category_to_email: start message_id={pid}")
     out = await _classify_message_via_sampling(

@@ -1,5 +1,8 @@
 from outlook_mcp.auth.token_handler import (
+    GRAPH_AUTH_ERRORS,
+    GraphConfigurationError,
     GraphMailboxMissingError,
+    GraphMailboxNotAllowedError,
     GraphTokenExpiredError,
     GraphTokenMissingError,
     resolve_delegated_graph_access_token,
@@ -7,7 +10,10 @@ from outlook_mcp.auth.token_handler import (
 )
 
 __all__ = [
+    "GRAPH_AUTH_ERRORS",
+    "GraphConfigurationError",
     "GraphMailboxMissingError",
+    "GraphMailboxNotAllowedError",
     "GraphTokenExpiredError",
     "GraphTokenMissingError",
     "resolve_delegated_graph_access_token",

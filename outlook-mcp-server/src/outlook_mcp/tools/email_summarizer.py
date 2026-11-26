@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from mcp.types import SamplingMessage, TextContent
 
-from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
+from outlook_mcp.auth.token_handler import GRAPH_AUTH_ERRORS
 from outlook_mcp.config import get_settings
 from outlook_mcp.pii.redactor import redact_email_json_if_enabled
 from outlook_mcp.tools._common import (
@@ -94,7 +94,7 @@ async def summarize_email(message_id: str, ctx: Context) -> str:
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     await tool_log_info(ctx, f"summarize_email: start message_id={pid}")
@@ -167,7 +167,7 @@ async def summarize_thread(conversation_id: str, ctx: Context, *, top: int = 50)
     """
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
     await tool_log_info(ctx, f"summarize_thread: start conversation_id={_preview(conversation_id)}")

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -10,7 +12,7 @@ from mcp.types import ContentBlock
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from outlook_mcp.config import get_settings
+from outlook_mcp.config import get_settings, parse_tool_names
 from outlook_mcp.tools import (
     email_classifier,
     email_drafter,
@@ -21,9 +23,23 @@ from outlook_mcp.tools import (
     mailbox_settings,
 )
 
+logger = logging.getLogger(__name__)
 
-def build_mcp() -> MCPServer:
+
+def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
     s = get_settings()
+    if s.log_level:
+        # Opt-in only: the default (empty) leaves logging exactly as before.
+        _level = getattr(logging, s.log_level)
+        logging.getLogger().setLevel(_level)
+        logging.getLogger("outlook_mcp").setLevel(_level)
+    # httpx logs full request URLs at INFO; attachment storage URLs contain blob keys.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    # pypdf warnings on malformed input can embed object data from attachments; keep them out of logs.
+    _pypdf_log = logging.getLogger("pypdf")
+    _pypdf_log.setLevel(logging.ERROR)
+    _pypdf_log.propagate = False
     mcp = MCPServer(
         name="outlook-mcp",
         instructions=(
@@ -36,6 +52,36 @@ def build_mcp() -> MCPServer:
         ),
     )
 
+    enabled = parse_tool_names(s.mcp_enabled_tools)
+    disabled = parse_tool_names(s.mcp_disabled_tools)
+    # name -> None when the package would register it, else the reason it cannot be registered.
+    declared: dict[str, str | None] = {}
+    registered: list[str] = []
+    # Write tools stay registered by default and refuse at call time (existing behaviour);
+    # selecting one explicitly while writes are off is a startup error instead.
+    write_gated: set[str] = set()
+
+    def tool(*, requires_writes: bool = False, condition: bool = True, reason: str = ""):
+        """Register a tool through the MCP_ENABLED_TOOLS / MCP_DISABLED_TOOLS selection.
+
+        ``requires_writes``: the tool refuses at call time unless ENABLE_WRITE_OPERATIONS. ``condition`` /
+        ``reason``: a tool that exists only when a prerequisite setting is configured; ``reason``
+        names the missing setting. Selection only removes tools, it never adds unavailable ones.
+        """
+
+        def decorator(fn):
+            name = fn.__name__
+            declared[name] = None if condition else (reason or "prerequisite not configured")
+            if requires_writes:
+                write_gated.add(name)
+            selected = (not enabled or name in enabled) and name not in disabled
+            if selected and condition:
+                registered.append(name)
+                return mcp.tool()(fn)
+            return fn
+
+        return decorator
+
     @mcp.custom_route("/health", methods=["GET"])
     async def health_check(_request: Request) -> JSONResponse:  # noqa: ARG001
         return JSONResponse({"status": "ok", "service": "outlook-mcp"})
@@ -45,12 +91,12 @@ def build_mcp() -> MCPServer:
 
         register_oauth_routes(mcp)
 
-    @mcp.tool()
+    @tool()
     async def get_email(message_id: str, ctx: Context) -> str:
         """Fetch one message by Graph message id (includes full body and bodyPreview)."""
         return await email_reader.get_email(message_id, ctx)
 
-    @mcp.tool()
+    @tool()
     async def get_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
         """Fetch messages sharing the same conversationId (thread).
 
@@ -59,7 +105,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_reader.get_thread(conversation_id, ctx, top=top)
 
-    @mcp.tool()
+    @tool()
     async def search_emails(
         query: str,
         ctx: Context,
@@ -107,7 +153,7 @@ def build_mcp() -> MCPServer:
             priority_filter=priority_filter,
         )
 
-    @mcp.tool()
+    @tool()
     async def list_inbox(
         ctx: Context,
         top: int = 25,
@@ -155,7 +201,7 @@ def build_mcp() -> MCPServer:
             sort_by_priority=sort_by_priority,
         )
 
-    @mcp.tool()
+    @tool()
     async def get_attachments(message_id: str, ctx: Context) -> str:
         """List attachment metadata for a message (id, name, contentType, size — never file bytes).
 
@@ -164,7 +210,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_reader.get_attachments(message_id, ctx)
 
-    @mcp.tool()
+    @tool()
     async def get_attachment_content(
         message_id: str, attachment_id: str, ctx: Context, as_resource: bool = False
     ) -> list[ContentBlock]:
@@ -186,7 +232,17 @@ def build_mcp() -> MCPServer:
         """
         return await email_reader.get_attachment_content(message_id, attachment_id, ctx, as_resource=as_resource)
 
-    @mcp.tool()
+    @tool()
+    async def get_attachment_text(message_id: str, attachment_id: str, ctx: Context, max_chars: int = 200000) -> str:
+        """Extract the text of a PDF attachment (read-only; no local pdftotext needed).
+
+        Returns ``{"ok": true, "pages": n, "text": "...", "truncated": bool}`` or
+        ``{"ok": false, "error": "not_pdf" | "too_large" | "unreadable"}``. Detection uses the
+        file's ``%PDF-`` header, not its name. Size is capped by ATTACHMENT_TEXT_MAX_BYTES.
+        """
+        return await email_reader.get_attachment_text(message_id, attachment_id, ctx, max_chars=max_chars)
+
+    @tool(requires_writes=True)
     async def save_attachment_to_path(message_id: str, attachment_id: str, path: str, ctx: Context) -> str:
         """Download one attachment and write it directly to local disk (no base64 round-trip).
 
@@ -197,7 +253,23 @@ def build_mcp() -> MCPServer:
         """
         return await email_reader.save_attachment_to_path(message_id, attachment_id, path, ctx)
 
-    @mcp.tool()
+    @tool(
+        requires_writes=True,
+        condition=bool(s.attachment_storage == "azure_blob" and s.attachment_blob_container_url.strip()),
+        reason="ATTACHMENT_STORAGE=azure_blob and ATTACHMENT_BLOB_CONTAINER_URL are not set",
+    )
+    async def save_attachment_to_storage(message_id: str, attachment_id: str, key: str, ctx: Context) -> str:
+        """Download one attachment and write it to the configured private Azure Blob container.
+
+        ``key`` is the blob name, e.g. ``Folder/2026/file.pdf`` (``/`` separates folders; no
+        leading slash, ``..`` or backslashes; may be limited to ATTACHMENT_ALLOWED_PREFIXES).
+        An existing blob with the same key is overwritten. Returns ``{"ok", "queued", "key",
+        "bytes"}`` without file contents; a separate system moves the blob onward. Requires
+        ENABLE_WRITE_OPERATIONS=true.
+        """
+        return await email_reader.save_attachment_to_storage(message_id, attachment_id, key, ctx)
+
+    @tool()
     async def list_master_categories(ctx: Context, top: int = 500) -> str:
         """List Outlook master categories (display name and color) for the signed-in user.
 
@@ -209,12 +281,12 @@ def build_mcp() -> MCPServer:
         """
         return await email_reader.list_master_categories(ctx, top=top)
 
-    @mcp.tool()
+    @tool()
     async def categorize_email(message_id: str, ctx: Context) -> str:
         """Classify email via MCP sampling (falls back to raw email if sampling unavailable)."""
         return await email_classifier.categorize_email(message_id, ctx)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def apply_llm_category_to_email(message_id: str, ctx: Context) -> str:
         """Classify via MCP sampling, then set Outlook message categories to that label.
 
@@ -224,7 +296,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_classifier.apply_llm_category_to_email(message_id, ctx)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def set_message_categories(
         ctx: Context,
         message_id: str,
@@ -237,12 +309,12 @@ def build_mcp() -> MCPServer:
         """
         return await email_writer.set_message_categories(ctx, message_id, categories)
 
-    @mcp.tool()
+    @tool()
     async def extract_email_data(message_id: str, ctx: Context) -> str:
         """Extract structured fields via MCP sampling (falls back if sampling unavailable)."""
         return await email_extractor.extract_email_data(message_id, ctx)
 
-    @mcp.tool()
+    @tool()
     async def summarize_email(message_id: str, ctx: Context) -> str:
         """Summarize a single email: 1-2 sentence summary with key entity extraction.
 
@@ -251,7 +323,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_summarizer.summarize_email(message_id, ctx)
 
-    @mcp.tool()
+    @tool()
     async def summarize_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
         """Summarize an entire email thread: progression, key facts, commitments, and state.
 
@@ -260,7 +332,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_summarizer.summarize_thread(conversation_id, ctx, top=top)
 
-    @mcp.tool()
+    @tool()
     async def draft_reply(
         message_id: str,
         ctx: Context,
@@ -274,7 +346,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_drafter.draft_reply(message_id, ctx, classification_context=classification_context)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def send_email(
         ctx: Context,
         subject: str,
@@ -306,12 +378,12 @@ def build_mcp() -> MCPServer:
             attachments=attachments,
         )
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def send_draft_email(ctx: Context, draft_id: str) -> str:
         """Send an existing draft by Graph message id (requires ENABLE_WRITE_OPERATIONS=true and Mail.Send)."""
         return await email_writer.send_draft_email(ctx, draft_id=draft_id)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def create_draft(
         ctx: Context,
         subject: str,
@@ -337,12 +409,12 @@ def build_mcp() -> MCPServer:
             attachments=attachments,
         )
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> str:
         """Mark a message as read or unread (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite)."""
         return await email_writer.mark_as_read(ctx, message_id, is_read=is_read)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def set_email_priority(ctx: Context, message_id: str, priority: str) -> str:
         """Set Outlook message importance: HIGH, MEDIUM, or LOW (case-insensitive; Graph high/normal/low).
 
@@ -351,7 +423,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_writer.set_email_priority(ctx, message_id, priority)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def set_message_flag(
         ctx: Context,
         message_id: str,
@@ -385,7 +457,7 @@ def build_mcp() -> MCPServer:
             time_zone=time_zone,
         )
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def move_email(ctx: Context, message_id: str, destination_folder_id: str, compact: bool = True) -> str:
         """Move a message to a different mail folder (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite).
 
@@ -400,7 +472,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_writer.move_email(ctx, message_id, destination_folder_id, compact=compact)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def move_emails(ctx: Context, message_ids: list[str], destination_folder_id: str) -> str:
         """Move many messages to one folder in a few Graph ``$batch`` calls (requires ENABLE_WRITE_OPERATIONS=true).
 
@@ -414,7 +486,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_writer.move_emails(ctx, message_ids, destination_folder_id)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def set_messages_categories(ctx: Context, items: list[dict[str, Any]]) -> str:
         """Set categories on many messages in Graph ``$batch`` calls (requires ENABLE_WRITE_OPERATIONS=true).
 
@@ -424,7 +496,7 @@ def build_mcp() -> MCPServer:
         """
         return await email_writer.set_messages_categories(ctx, items)
 
-    @mcp.tool()
+    @tool()
     async def list_message_rules(ctx: Context) -> str:
         """List Inbox rules: id, displayName, sequence, isEnabled, conditions, actions, exceptions.
 
@@ -432,7 +504,7 @@ def build_mcp() -> MCPServer:
         """
         return await mailbox_settings.list_message_rules(ctx)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def create_message_rule(
         ctx: Context,
         display_name: str,
@@ -479,7 +551,7 @@ def build_mcp() -> MCPServer:
             is_enabled=is_enabled,
         )
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def update_message_rule(
         ctx: Context,
         rule_id: str,
@@ -506,14 +578,14 @@ def build_mcp() -> MCPServer:
             is_enabled=is_enabled,
         )
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def delete_message_rule(ctx: Context, rule_id: str) -> str:
         """Delete an Inbox rule by id (from ``list_message_rules``). Requires ENABLE_WRITE_OPERATIONS=true
         and ``MailboxSettings.ReadWrite``.
         """
         return await mailbox_settings.delete_message_rule(ctx, rule_id)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def create_master_category(ctx: Context, display_name: str, color: str = "preset0") -> str:
         """Create an Outlook master category. Requires ENABLE_WRITE_OPERATIONS=true and
         ``MailboxSettings.ReadWrite``.
@@ -541,7 +613,7 @@ def build_mcp() -> MCPServer:
         """
         return await mailbox_settings.create_master_category(ctx, display_name, color=color)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def delete_master_category(ctx: Context, category_id: str) -> str:
         """Delete an Outlook master category by id (from ``list_master_categories``). Messages keep the
         category name string; it just loses its color. Requires ENABLE_WRITE_OPERATIONS=true and
@@ -549,7 +621,7 @@ def build_mcp() -> MCPServer:
         """
         return await mailbox_settings.delete_master_category(ctx, category_id)
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def create_mail_folder(
         ctx: Context,
         display_name: str,
@@ -571,7 +643,7 @@ def build_mcp() -> MCPServer:
             parent_folder_name=parent_folder_name,
         )
 
-    @mcp.tool()
+    @tool(requires_writes=True)
     async def create_reply_draft(
         ctx: Context,
         message_id: str,
@@ -592,7 +664,7 @@ def build_mcp() -> MCPServer:
             ctx, message_id, comment=comment, content_type=content_type, attachments=attachments
         )
 
-    @mcp.tool()
+    @tool()
     async def list_folders(ctx: Context, top: int = 100) -> str:
         """List mail folders for the signed-in user (id, displayName, item counts).
 
@@ -600,6 +672,25 @@ def build_mcp() -> MCPServer:
         or as ``parent_folder_id`` / ``parent_folder_name`` for ``create_mail_folder``.
         """
         return await email_reader.list_folders(ctx, top=top)
+
+    if _extra_tools is not None:
+        # Test seam: lets tests declare extra (e.g. conditional) tools through the same ``tool`` decorator.
+        _extra_tools(tool)
+
+    unknown = sorted((enabled | disabled) - set(declared))
+    if unknown:
+        msg = f"Unknown tool name(s) in MCP_ENABLED_TOOLS / MCP_DISABLED_TOOLS: {', '.join(unknown)}"
+        raise ValueError(msg)
+    for name in sorted(enabled - disabled):
+        if declared[name] is not None:
+            msg = f"Tool {name!r} is enabled in MCP_ENABLED_TOOLS but cannot be registered: {declared[name]}"
+            raise ValueError(msg)
+    if not s.enable_write_operations:
+        for name in sorted((enabled - disabled) & write_gated):
+            msg = f"Tool {name!r} is enabled in MCP_ENABLED_TOOLS but ENABLE_WRITE_OPERATIONS is not true"
+            raise ValueError(msg)
+    # WARNING so it stays visible at LOG_LEVEL=WARNING (container default); names only.
+    logger.warning("registered tools: %s", ", ".join(sorted(registered)))
 
     return mcp
 

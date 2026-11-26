@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from mcp.types import BlobResourceContents, ContentBlock, EmbeddedResource, ImageContent, TextContent
 
 from outlook_mcp.auth.graph_client import MailFolderAmbiguousError, MailFolderNotFoundError
-from outlook_mcp.auth.token_handler import GraphTokenExpiredError, GraphTokenMissingError
+from outlook_mcp.auth.managed_identity import ManagedIdentityError, get_managed_identity_token
+from outlook_mcp.auth.token_handler import GRAPH_AUTH_ERRORS
 from outlook_mcp.config import get_settings
+from outlook_mcp.storage.azure_blob import (
+    STORAGE_RESOURCE,
+    StorageConfigError,
+    normalize_container_url,
+    parse_allowed_prefixes,
+    put_blob,
+    validate_storage_key,
+)
 from outlook_mcp.tools._attachments import (
     ATTACHMENT_LIST_SELECT,
     guess_content_type,
@@ -50,7 +61,7 @@ async def get_email(message_id: str, ctx: Context) -> str:
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"get_email: start message_id={pid}")
     await tool_report_progress(ctx, 10, 100, message="get_email: start")
@@ -86,7 +97,7 @@ async def get_thread(conversation_id: str, ctx: Context, top: int = 50) -> str:
     cid = _preview(conversation_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"get_thread: start conversation_id={cid} top={top}")
     await tool_report_progress(ctx, 10, 100, message="get_thread: start")
@@ -148,10 +159,9 @@ async def search_emails(
     ``hasattachment:yes``, ``from:a@x.com AND subject:payment``. See
     https://learn.microsoft.com/en-us/graph/search-query-parameter
     """
-    qprev = _preview(query, max_len=24)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     try:
         pf = normalize_priority_filter(priority_filter)
@@ -167,7 +177,7 @@ async def search_emails(
         return json.dumps({"error": "invalid_parameters", "message": str(e)})
     await tool_log_info(
         ctx,
-        f"search_emails: start query={qprev!r} top={top} read_filter={read_filter!r} "
+        f"search_emails: start has_query={bool(query)} query_len={len(query)} top={top} read_filter={read_filter!r} "
         f"priority_filter={pf!r}",
     )
     await tool_report_progress(ctx, 10, 100, message="search_emails: start")
@@ -248,7 +258,7 @@ async def list_inbox(
     """
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     if folder_id and folder_name:
         return json.dumps(
@@ -304,7 +314,7 @@ async def list_inbox(
         ctx,
         f"list_inbox: start top={top} skip={skip} unread_only={unread_only} "
         f"priority_filter={pf!r} sort_by_priority={sort_by_priority} "
-        f"folder_id={folder_id!r} folder_name={folder_name!r} effective_folder_id={effective_folder_id!r}",
+        f"folder_id_set={bool(folder_id)} folder_name_set={folder_name is not None}",
     )
     try:
         await tool_report_progress(ctx, 40, 100, message="list_inbox: calling Graph")
@@ -367,7 +377,7 @@ async def get_attachments(message_id: str, ctx: Context) -> str:
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"get_attachments: start message_id={pid}")
     await tool_report_progress(ctx, 10, 100, message="get_attachments: start")
@@ -414,10 +424,10 @@ async def get_attachment_content(
     settings = get_settings()
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return [TextContent(type="text", text=json.dumps(tool_error_token(e)))]
 
-    await tool_log_info(ctx, f"get_attachment_content: start message_id={pid} attachment_id={attachment_id!r}")
+    await tool_log_info(ctx, f"get_attachment_content: start message_id={pid} attachment_id={_preview(attachment_id)}")
     try:
         meta = await client.get_attachment(message_id, attachment_id)
     except httpx.HTTPStatusError as e:
@@ -535,6 +545,206 @@ async def get_attachment_content(
     return blocks
 
 
+_TOO_LARGE_JSON = json.dumps({"ok": False, "error": "too_large"})
+
+
+async def _download_file_attachment(
+    client: Any, message_id: str, attachment_id: str, ctx: Context, tool: str, max_bytes: int | None = None
+) -> tuple[str | None, str, bytes, str]:
+    """Fetch a file attachment's metadata and bytes.
+
+    Returns ``(error_json, name, raw_bytes, content_type)``; ``error_json`` is None on success.
+    With ``max_bytes``, a metadata ``size`` above the cap returns ``too_large`` before any download.
+    """
+    try:
+        meta = await client.get_attachment(message_id, attachment_id)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"{tool}: http_error status={e.response.status_code}")
+        return _http_error_json(e), "", b"", ""
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"{tool}: network_error {type(e).__name__}")
+        return _network_error_json(e), "", b"", ""
+
+    if meta.get("@odata.type") != "#microsoft.graph.fileAttachment":
+        err = json.dumps(
+            {
+                "error": "unsupported_attachment_type",
+                "odata_type": meta.get("@odata.type"),
+                "attachment": meta,
+            }
+        )
+        return err, "", b"", ""
+
+    meta_size = meta.get("size")
+    if max_bytes is not None and isinstance(meta_size, int) and meta_size > max_bytes:
+        return _TOO_LARGE_JSON, "", b"", ""
+
+    try:
+        raw_bytes, header_content_type = await client.get_attachment_raw_bytes(message_id, attachment_id)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"{tool}: http_error status={e.response.status_code}")
+        return _http_error_json(e), "", b"", ""
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"{tool}: network_error {type(e).__name__}")
+        return _network_error_json(e), "", b"", ""
+
+    name = meta.get("name") or "attachment"
+    content_type = meta.get("contentType") or header_content_type or guess_content_type(name, None)
+    return None, name, raw_bytes, content_type
+
+
+_MAX_CHARS_CEILING = 1_000_000
+
+
+async def get_attachment_text(message_id: str, attachment_id: str, ctx: Context, max_chars: int = 200000) -> str:
+    """Download a PDF attachment and return its extracted text (nothing is logged about content)."""
+    s = get_settings()
+    max_chars = max(1, min(int(max_chars), _MAX_CHARS_CEILING))
+    try:
+        client = make_graph_client(ctx)
+    except GRAPH_AUTH_ERRORS as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"get_attachment_text: start message_id={_preview(message_id)}")
+    error, _name, raw, _ct = await _download_file_attachment(
+        client, message_id, attachment_id, ctx, "get_attachment_text", max_bytes=s.attachment_text_max_bytes
+    )
+    if error is not None:
+        return _scrub_attachment_text_error(error)
+    if len(raw) > s.attachment_text_max_bytes:
+        return _TOO_LARGE_JSON
+    if raw.lstrip(b"\x00 \t\r\n")[:5] != b"%PDF-":
+        return json.dumps({"ok": False, "error": "not_pdf"})
+    try:
+        pages, text, page_limited = await _run_pdf_extraction(
+            raw, max_chars, s.attachment_text_max_pages, s.attachment_text_timeout_seconds
+        )
+    except TimeoutError:
+        await tool_log_warning(ctx, "get_attachment_text: timeout")
+        return json.dumps({"ok": False, "error": "unreadable"})
+    except Exception:  # noqa: BLE001 - pypdf raises many types (incl. DependencyError); never leak details
+        await tool_log_warning(ctx, "get_attachment_text: unreadable")
+        return json.dumps({"ok": False, "error": "unreadable"})
+    truncated = page_limited or len(text) > max_chars
+    await tool_log_info(ctx, "get_attachment_text: complete")
+    return json.dumps({"ok": True, "pages": pages, "text": text[:max_chars], "truncated": truncated})
+
+
+def _scrub_attachment_text_error(error_json: str) -> str:
+    """Strict error shape for get_attachment_text: no attachment name/metadata, no Graph body text."""
+    try:
+        data = json.loads(error_json)
+    except ValueError:
+        return json.dumps({"ok": False, "error": "unreadable"})
+    kind = data.get("error")
+    if kind == "unsupported_attachment_type":
+        return json.dumps({"ok": False, "error": "not_pdf"})
+    if kind == "http_error":
+        return json.dumps({"error": "http_error", "status_code": data.get("status_code")})
+    if kind == "network_error":
+        return json.dumps({"error": "network_error"})
+    return error_json
+
+
+# PDF parsing runs on its own small pool so a slow or stuck file can never starve the default
+# ``asyncio.to_thread`` pool used by the other tools. A worker thread cannot be cancelled: on timeout
+# the caller gets "unreadable" while the thread finishes in the background (bounded by the byte and
+# page caps). The semaphore slot is held until the thread really ends, so at most
+# ``_PDF_MAX_WORKERS`` extractions run and nothing queues up behind stuck ones.
+_PDF_MAX_WORKERS = 2
+_PDF_EXECUTOR = ThreadPoolExecutor(max_workers=_PDF_MAX_WORKERS, thread_name_prefix="pdf-text")
+_pdf_slots: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+
+
+def _pdf_semaphore() -> asyncio.Semaphore:
+    """One semaphore per event loop (asyncio primitives are bound to the loop that first waits on them)."""
+    global _pdf_slots
+    loop = asyncio.get_running_loop()
+    if _pdf_slots is None or _pdf_slots[0] is not loop:
+        _pdf_slots = (loop, asyncio.Semaphore(_PDF_MAX_WORKERS))
+    return _pdf_slots[1]
+
+
+async def _run_pdf_extraction(
+    raw: bytes, max_chars: int, max_pages: int, timeout: float
+) -> tuple[int, str, bool]:
+    """Run ``_extract_pdf_text`` on the bounded pool; ``TimeoutError`` if no slot or no result in time."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    sem = _pdf_semaphore()
+    await asyncio.wait_for(sem.acquire(), timeout=timeout)  # all slots busy for too long -> TimeoutError
+
+    def _release(_f: object) -> None:
+        try:
+            loop.call_soon_threadsafe(sem.release)
+        except RuntimeError:  # loop already closed (shutdown): nothing left to release for
+            pass
+
+    try:
+        cf = _PDF_EXECUTOR.submit(_extract_pdf_text, raw, max_chars, max_pages)
+    except BaseException:
+        sem.release()
+        raise
+    cf.add_done_callback(_release)
+    remaining = max(deadline - loop.time(), 0.0)
+    # shield: a timeout must not detach the slot from the still-running thread.
+    return await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(cf)), timeout=remaining)
+
+
+def _extract_pdf_text(raw: bytes, max_chars: int, max_pages: int) -> tuple[int, str, bool]:
+    """Return (page_count, text, page_limited). Text stops just above ``max_chars`` so truncation is detectable.
+
+    Encrypted PDFs are tried with the empty password only (AES needs ``cryptography``, which ships
+    with pyjwt[crypto]; a pypdf DependencyError would surface as ``unreadable``).
+    """
+    import io
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(raw))
+    if reader.is_encrypted and not reader.decrypt(""):
+        raise ValueError("encrypted")
+    n_pages = len(reader.pages)
+    parts: list[str] = []
+    total = 0
+    for i in range(min(n_pages, max_pages)):
+        t = reader.pages[i].extract_text() or ""
+        parts.append(t)
+        total += len(t) + 1
+        if total > max_chars:
+            break
+    return n_pages, "\n".join(parts), n_pages > max_pages
+
+
+def _http_error_json(e: httpx.HTTPStatusError) -> str:
+    return json.dumps(
+        {
+            "error": "http_error",
+            "status_code": e.response.status_code,
+            "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+        }
+    )
+
+
+def _network_error_json(e: httpx.HTTPError) -> str:
+    return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
+def _safe_attachment_filename(name: str | None) -> str | None:
+    """Reduce an attachment's own (sender-controlled) name to a plain file name, or ``None``.
+
+    Keeps only the last component after ``/`` or ``\\``, drops control characters, and rejects
+    empty, ``.`` and ``..`` so the name can never point outside the target directory.
+    """
+    if not name:
+        return None
+    last = name.replace("\\", "/").rsplit("/", 1)[-1]
+    cleaned = "".join(ch for ch in last if ord(ch) >= 32 and ord(ch) != 127).strip()
+    if cleaned in ("", ".", ".."):
+        return None
+    return cleaned
+
+
 async def save_attachment_to_path(message_id: str, attachment_id: str, path: str, ctx: Context) -> str:
     """Download one attachment and write it directly to local disk (no base64 round-trip).
 
@@ -559,56 +769,33 @@ async def save_attachment_to_path(message_id: str, attachment_id: str, path: str
     pid = _preview(message_id)
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
 
-    await tool_log_info(ctx, f"save_attachment_to_path: start message_id={pid} attachment_id={attachment_id!r}")
-    try:
-        meta = await client.get_attachment(message_id, attachment_id)
-    except httpx.HTTPStatusError as e:
-        await tool_log_warning(ctx, f"save_attachment_to_path: http_error status={e.response.status_code}")
-        return json.dumps(
-            {
-                "error": "http_error",
-                "status_code": e.response.status_code,
-                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
-            }
-        )
-    except httpx.HTTPError as e:
-        await tool_log_warning(ctx, f"save_attachment_to_path: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
-
-    if meta.get("@odata.type") != "#microsoft.graph.fileAttachment":
-        return json.dumps(
-            {
-                "error": "unsupported_attachment_type",
-                "odata_type": meta.get("@odata.type"),
-                "attachment": meta,
-            }
-        )
-
-    try:
-        raw_bytes, header_content_type = await client.get_attachment_raw_bytes(message_id, attachment_id)
-    except httpx.HTTPStatusError as e:
-        await tool_log_warning(ctx, f"save_attachment_to_path: http_error status={e.response.status_code}")
-        return json.dumps(
-            {
-                "error": "http_error",
-                "status_code": e.response.status_code,
-                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
-            }
-        )
-    except httpx.HTTPError as e:
-        await tool_log_warning(ctx, f"save_attachment_to_path: network_error {type(e).__name__}")
-        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
-
-    name = meta.get("name") or "attachment"
-    content_type = meta.get("contentType") or header_content_type or guess_content_type(name, None)
+    await tool_log_info(ctx, f"save_attachment_to_path: start message_id={pid} attachment_id={_preview(attachment_id)}")
+    error, name, raw_bytes, content_type = await _download_file_attachment(
+        client, message_id, attachment_id, ctx, "save_attachment_to_path"
+    )
+    if error is not None:
+        return error
 
     try:
         target = Path(path).expanduser()
         if target.exists() and target.is_dir():
-            target = target / name
+            # The attachment name comes from the email sender: never let it leave the directory.
+            safe_name = _safe_attachment_filename(name)
+            base = target.resolve()
+            candidate = (base / safe_name).resolve() if safe_name else None
+            if candidate is None or candidate.parent != base or not candidate.is_relative_to(base):
+                await tool_log_warning(ctx, "save_attachment_to_path: unsafe attachment name")
+                return json.dumps(
+                    {
+                        "error": "validation_error",
+                        "message": "Attachment name is not a safe file name; pass an explicit file path instead.",
+                    }
+                )
+            target = candidate
+            name = safe_name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(raw_bytes)
     except OSError as e:
@@ -619,6 +806,104 @@ async def save_attachment_to_path(message_id: str, attachment_id: str, path: str
     return json.dumps(
         {"ok": True, "path": str(target), "name": name, "size": len(raw_bytes), "content_type": content_type}
     )
+
+
+def _storage_http_client() -> httpx.Client:
+    return httpx.Client(timeout=120.0)
+
+
+async def save_attachment_to_storage(message_id: str, attachment_id: str, key: str, ctx: Context) -> str:
+    """Download one attachment and write it to the configured private Azure Blob container.
+
+    Uses the app's managed identity (no secrets). ``key`` is the blob name (``/`` separates
+    folders). Nothing about the key, file name or content is logged. Requires
+    ENABLE_WRITE_OPERATIONS=true and GRAPH_TRUST_REQUEST_HEADERS=false (the storage identity is the
+    server's own, so the Graph identity must be too; otherwise returns ``configuration_error``).
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        return json.dumps(
+            {
+                "error": "write_disabled",
+                "message": "Set ENABLE_WRITE_OPERATIONS=true to enable save_attachment_to_storage.",
+            }
+        )
+    if s.graph_trust_request_headers:
+        # Storage writes use the server's managed identity. If callers may bring their own Graph
+        # token via headers, any caller could make the server write into its storage account.
+        return json.dumps(
+            {
+                "error": "configuration_error",
+                "message": (
+                    "save_attachment_to_storage writes with the server's managed identity; it requires "
+                    "GRAPH_TRUST_REQUEST_HEADERS=false so the Graph identity is the server's own."
+                ),
+            }
+        )
+    if s.attachment_storage != "azure_blob" or not s.attachment_blob_container_url.strip():
+        return json.dumps(
+            {
+                "error": "configuration_error",
+                "message": "Set ATTACHMENT_STORAGE=azure_blob and ATTACHMENT_BLOB_CONTAINER_URL.",
+            }
+        )
+    try:
+        container = normalize_container_url(s.attachment_blob_container_url)
+    except StorageConfigError as e:
+        return json.dumps({"error": "configuration_error", "message": str(e)})
+    try:
+        prefixes = parse_allowed_prefixes(s.attachment_allowed_prefixes)
+    except StorageConfigError as e:
+        return json.dumps({"error": "configuration_error", "message": str(e)})
+    try:
+        norm_key = validate_storage_key(key, prefixes)
+    except ValueError as e:
+        return json.dumps({"error": "invalid_key", "reason": str(e)})
+
+    try:
+        client = make_graph_client(ctx)
+    except GRAPH_AUTH_ERRORS as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"save_attachment_to_storage: start message_id={_preview(message_id)}")
+    error, _name, raw_bytes, content_type = await _download_file_attachment(
+        client, message_id, attachment_id, ctx, "save_attachment_to_storage"
+    )
+    if error is not None:
+        return error
+
+    try:
+        token, _expires = await asyncio.to_thread(
+            get_managed_identity_token, STORAGE_RESOURCE, client_id=s.azure_client_id
+        )
+    except ManagedIdentityError as e:
+        await tool_log_warning(ctx, "save_attachment_to_storage: managed_identity_error")
+        return json.dumps(tool_error_token(e))
+
+    def _put() -> None:
+        with _storage_http_client() as http:
+            put_blob(container, norm_key, raw_bytes, content_type, token, http)
+
+    try:
+        await asyncio.to_thread(_put)
+    except httpx.HTTPStatusError as e:
+        await tool_log_warning(ctx, f"save_attachment_to_storage: storage_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "storage_error",
+                "status_code": e.response.status_code,
+                "storage_error_code": e.response.headers.get("x-ms-error-code", ""),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"save_attachment_to_storage: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": "Could not reach Azure Blob Storage."})
+    except Exception as e:  # noqa: BLE001 - never let URL-encoding/transport surprises escape with key text
+        await tool_log_warning(ctx, f"save_attachment_to_storage: internal_error {type(e).__name__}")
+        return json.dumps({"error": "storage_error", "message": "Could not write to Azure Blob Storage."})
+
+    await tool_log_info(ctx, "save_attachment_to_storage: complete")
+    return json.dumps({"ok": True, "queued": True, "key": norm_key, "bytes": len(raw_bytes)})
 
 
 async def list_master_categories(ctx: Context, top: int = 500) -> str:
@@ -633,7 +918,7 @@ async def list_master_categories(ctx: Context, top: int = 500) -> str:
     """
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"list_master_categories: start top={top}")
     await tool_report_progress(ctx, 10, 100, message="list_master_categories: start")
@@ -666,7 +951,7 @@ async def list_folders(ctx: Context, top: int = 100) -> str:
     """
     try:
         client = make_graph_client(ctx)
-    except (GraphTokenExpiredError, GraphTokenMissingError) as e:
+    except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
     await tool_log_info(ctx, f"list_folders: start top={top}")
     try:

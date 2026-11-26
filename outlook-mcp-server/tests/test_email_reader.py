@@ -1280,3 +1280,62 @@ async def test_save_attachment_to_path_token_missing() -> None:
         result = await save_attachment_to_path("msg-1", "att-1", "/tmp/x.txt", ctx=None)
     data = json.loads(result)
     assert data["error"] == "missing_token"
+
+
+def _named_attachment_client(name: str) -> AsyncMock:
+    c = AsyncMock()
+    c.get_attachment = AsyncMock(
+        return_value={
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": name,
+            "contentType": "text/plain",
+            "size": 5,
+        }
+    )
+    c.get_attachment_raw_bytes = AsyncMock(return_value=(b"hello", "text/plain"))
+    return c
+
+
+async def _save_into_dir(name: str, directory) -> dict:
+    from outlook_mcp.tools.email_reader import save_attachment_to_path
+
+    with (
+        patch("outlook_mcp.tools.email_reader.get_settings", return_value=_AttachmentSettingsWriteEnabled()),
+        patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=_named_attachment_client(name)),
+    ):
+        return json.loads(await save_attachment_to_path("msg-1", "att-1", str(directory), ctx=None))
+
+
+def _files_under(root) -> set[str]:
+    return {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("../../evil.txt", "evil.txt"),
+        ("/etc/x", "x"),
+        ("a\\..\\b", "b"),
+        ("ev\x00il\n.txt", "evil.txt"),
+        ("", "attachment"),  # empty Graph name falls back to the generic "attachment"
+    ],
+)
+async def test_save_attachment_to_path_directory_name_cannot_escape(tmp_path, name, expected) -> None:
+    root = tmp_path / "root"
+    target_dir = root / "inbox"
+    target_dir.mkdir(parents=True)
+    data = await _save_into_dir(name, target_dir)
+    assert data["ok"] is True
+    assert data["name"] == expected
+    assert data["path"] == str((target_dir / expected).resolve())
+    assert _files_under(tmp_path) == {f"root/inbox/{expected}"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [".", "..", "dir/", "a/..", "\x01\x02", " "])
+async def test_save_attachment_to_path_directory_rejects_unsafe_names(tmp_path, name) -> None:
+    data = await _save_into_dir(name, tmp_path)
+    assert data["error"] == "validation_error"
+    assert _files_under(tmp_path) == set()
