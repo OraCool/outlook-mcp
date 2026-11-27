@@ -231,7 +231,7 @@ class Settings(BaseSettings):
         default=15_000_000,
         ge=1,
         validation_alias=AliasChoices("ATTACHMENT_TEXT_MAX_BYTES", "attachment_text_max_bytes"),
-        description="Max attachment size get_attachment_text will download and parse as PDF.",
+        description="Max attachment size (PDF or text) get_attachment_text will download.",
     )
 
     attachment_text_max_pages: int = Field(

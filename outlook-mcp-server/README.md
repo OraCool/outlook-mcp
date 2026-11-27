@@ -424,7 +424,7 @@ storage, the `Storage Blob Data Contributor` role on the target container.
 | `ATTACHMENT_STORAGE` | `azure_blob` enables `save_attachment_to_storage`; empty (default) disables it. |
 | `ATTACHMENT_BLOB_CONTAINER_URL` | `https://<account>.blob.core.windows.net/<container>`. |
 | `ATTACHMENT_ALLOWED_PREFIXES` | Comma-separated key prefixes the tool may write under (matched on whole path segments); empty = any key. |
-| `ATTACHMENT_TEXT_MAX_BYTES` | Largest PDF `get_attachment_text` will download and parse (default `15000000`). |
+| `ATTACHMENT_TEXT_MAX_BYTES` | Largest attachment (PDF or text) `get_attachment_text` will download (default `15000000`). |
 | `ATTACHMENT_TEXT_MAX_PAGES` | Pages extracted per PDF (default `200`); beyond it the result is marked truncated. |
 | `ATTACHMENT_TEXT_TIMEOUT_SECONDS` | Wall-clock bound for extraction (default `30`); on timeout the result is `unreadable`. |
 | `MCP_INSTRUCTIONS_APPEND` | Optional text appended to the generated server instructions (see "Server instructions"); truncated to 4000 characters, never logged. |
@@ -477,9 +477,12 @@ header token could make the server write to its storage). With trusted headers i
 
 ### `get_attachment_text`
 
-Extracts text from a PDF attachment (`pypdf`). `max_chars` is clamped to 1 .. 1,000,000. Oversized,
-non-PDF, encrypted or malformed files return a short error (`too_large`, `not_pdf`, `unreadable`) with no
-file name or content in logs.
+Extracts text from a PDF attachment (`pypdf`, `"format": "pdf"`) or returns a plain-text attachment
+(TXT, CSV, XML, JSON, ...; `"format": "text"`). Text must be UTF-8 (BOM optional) or UTF-16 with a BOM and
+is returned verbatim: XML is not parsed, so no entity expansion or external lookups happen. `max_chars` is
+clamped to 1 .. 1,000,000. Oversized, binary, encrypted or malformed files return a short error
+(`too_large`, `unsupported_format`, `unreadable`) with no file name or content in logs. (Before 0.15.0
+non-PDF files returned `not_pdf`.)
 
 Extraction runs on a dedicated pool of 2 threads, so slow PDFs never block other tools. When
 `ATTACHMENT_TEXT_TIMEOUT_SECONDS` elapses, the call returns `unreadable`. A timed-out extraction cannot be

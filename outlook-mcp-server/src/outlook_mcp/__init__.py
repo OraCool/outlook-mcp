@@ -1,3 +1,3 @@
 """Outlook MCP server — Microsoft Graph mail tools for AR Email Management."""
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"

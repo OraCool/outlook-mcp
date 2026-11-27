@@ -84,7 +84,11 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
 
     @tool()
     async def get_email(message_id: str, ctx: Context) -> str:
-        """Fetch one message by Graph message id (includes full body and bodyPreview)."""
+        """Fetch one message by Graph message id (includes full body and bodyPreview).
+
+        Also returns ``is_draft`` and the ``cc_recipients`` / ``bcc_recipients`` lists (Bcc is visible
+        only on drafts and sent items of this mailbox).
+        """
         return await email_reader.get_email(message_id, ctx)
 
     @tool()
@@ -232,11 +236,13 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
 
     @tool()
     async def get_attachment_text(message_id: str, attachment_id: str, ctx: Context, max_chars: int = 200000) -> str:
-        """Extract the text of a PDF attachment (read-only; no local pdftotext needed).
+        """Read the text of a PDF or plain-text attachment (TXT, CSV, XML, JSON, ...) without saving it.
 
-        Returns ``{"ok": true, "pages": n, "text": "...", "truncated": bool}`` or
-        ``{"ok": false, "error": "not_pdf" | "too_large" | "unreadable"}``. Detection uses the
-        file's ``%PDF-`` header, not its name. Size is capped by ATTACHMENT_TEXT_MAX_BYTES.
+        PDF: ``{"ok": true, "format": "pdf", "pages": n, "text": "...", "truncated": bool}``.
+        Text (UTF-8, or UTF-16 with BOM): ``{"ok": true, "format": "text", "text": "...",
+        "truncated": bool}`` — returned verbatim, XML is not parsed. Otherwise
+        ``{"ok": false, "error": "unsupported_format" | "too_large" | "unreadable"}``. Detection uses
+        the file's bytes, not its name. Size is capped by ATTACHMENT_TEXT_MAX_BYTES.
         """
         return await email_reader.get_attachment_text(message_id, attachment_id, ctx, max_chars=max_chars)
 

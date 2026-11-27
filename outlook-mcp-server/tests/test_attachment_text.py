@@ -53,6 +53,7 @@ async def _call(raw: bytes, settings=_S, size: int | None = None, **kw) -> dict:
 async def test_pdf_text_extracted() -> None:
     out = await _call((FIX / "contract_sample.pdf").read_bytes())
     assert out["ok"] is True
+    assert out["format"] == "pdf"
     assert out["pages"] >= 1
     assert out["truncated"] is False
     for marker in ("Section I", "Signature", "Error! Reference source not found."):
@@ -60,9 +61,50 @@ async def test_pdf_text_extracted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_not_pdf() -> None:
+async def test_plain_text_returned_verbatim() -> None:
     out = await _call((FIX / "not_a_pdf.bin").read_bytes())
-    assert out == {"ok": False, "error": "not_pdf", "_client": out["_client"]}
+    assert out["ok"] is True
+    assert out["format"] == "text"
+    assert out["text"] == "plain text, not a pdf\n"
+    assert out["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_xml_text_is_not_parsed() -> None:
+    xml = (
+        '<?xml version="1.0"?>\n<!DOCTYPE d [<!ENTITY e SYSTEM "file:///etc/passwd">]>\n'
+        "<Doc><Ntry><Amt Ccy=\"EUR\">100.00</Amt><Nm>Jane Example</Nm><Ref>&e;</Ref></Ntry></Doc>\n"
+    )
+    out = await _call(xml.encode("utf-8"))
+    assert out["ok"] is True
+    assert out["format"] == "text"
+    assert out["text"] == xml  # verbatim: the entity is not expanded
+    assert "root:" not in out["text"]
+
+
+@pytest.mark.asyncio
+async def test_utf8_bom_and_utf16_text() -> None:
+    body = "Date;Name;Amount\n2026-01-05;Ēvelīna Pavyzdys;120,00\n"
+    out = await _call(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    assert (out["ok"], out["text"]) == (True, body)
+    out = await _call(body.encode("utf-16"))  # Python adds the BOM
+    assert (out["ok"], out["text"]) == (True, body)
+
+
+@pytest.mark.asyncio
+async def test_text_truncated_to_max_chars() -> None:
+    out = await _call(("x" * 50).encode(), max_chars=10)
+    assert (out["ok"], out["text"], out["truncated"]) == (True, "x" * 10, True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", b"PK\x03\x04\x14\x00\x00\x00", bytes(range(256)), b"   \n\t", b"\xff\xfa\x00\x00"],
+)
+async def test_binary_is_unsupported_format(raw: bytes) -> None:
+    out = await _call(raw)
+    assert out == {"ok": False, "error": "unsupported_format", "_client": out["_client"]}
 
 
 @pytest.mark.asyncio
@@ -127,7 +169,7 @@ def _multipage(n: int, encrypt_user_pw: str | None = None, alg: str = "AES-128")
 
 
 @pytest.mark.asyncio
-async def test_non_file_attachment_is_not_pdf_without_metadata() -> None:
+async def test_non_file_attachment_is_unsupported_without_metadata() -> None:
     c = AsyncMock()
     c.get_attachment = AsyncMock(
         return_value={"@odata.type": "#microsoft.graph.itemAttachment", "id": "a1", "name": "SecretName.msg"}
@@ -137,7 +179,7 @@ async def test_non_file_attachment_is_not_pdf_without_metadata() -> None:
         patch("outlook_mcp.tools.email_reader.make_graph_client", return_value=c),
     ):
         raw = await email_reader.get_attachment_text("m1", "a1", ctx=None)
-    assert json.loads(raw) == {"ok": False, "error": "not_pdf"}
+    assert json.loads(raw) == {"ok": False, "error": "unsupported_format"}
     assert "SecretName" not in raw
 
 
