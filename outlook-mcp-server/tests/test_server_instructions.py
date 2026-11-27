@@ -135,3 +135,22 @@ def test_folder_line_gating(monkeypatch):
     assert "Prefer" not in inbox
     batch = _build(monkeypatch, MCP_ENABLED_TOOLS="move_emails,set_messages_categories", ENABLE_WRITE_OPERATIONS="true").instructions
     assert "Prefer move_emails / set_messages_categories" in batch
+
+
+def test_key_hints_are_in_tool_descriptions(monkeypatch):
+    """Clients that drop server instructions still see the hints in tool descriptions."""
+    app = _build(
+        monkeypatch,
+        ENABLE_WRITE_OPERATIONS="true",
+        MCP_ENABLED_TOOLS="search_emails,create_draft,create_reply_draft,list_inbox,get_thread",
+    )
+    tools = {t.name: t.description or "" for t in anyio.run(app.list_tools)}
+    assert "hasattachment:yes" in tools["search_emails"]
+    assert "received_after" in tools["search_emails"]
+    assert "bcc_addresses" in tools["create_draft"]
+    assert "compact" in tools["create_draft"]
+    assert "Nothing is sent" in tools["create_draft"]
+    assert "mailbox itself" in tools["create_reply_draft"]
+    assert "create_draft" in tools["create_reply_draft"]
+    assert "unanswered" in tools["list_inbox"]
+    assert "unanswered" in tools["get_thread"]
