@@ -391,8 +391,16 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
         to_addresses: list[str] | None = None,
         content_type: str = "Text",
         attachments: list[dict] | None = None,
+        cc_addresses: list[str] | None = None,
+        bcc_addresses: list[str] | None = None,
     ) -> str:
         """Create a draft message (requires ENABLE_WRITE_OPERATIONS=true).
+
+        Optional ``cc_addresses`` / ``bcc_addresses`` (lists of plain addresses; trimmed, validated,
+        de-duplicated per list; at most 500 recipients in total across to + cc + bcc). For group
+        reminders put all participants in ``bcc_addresses`` so they don't see each other; a draft with
+        only BCC recipients is allowed (leave ``to_addresses`` empty or use your own mailbox). The
+        response reports ``cc_count`` / ``bcc_count`` and never echoes addresses.
 
         Optional ``attachments``: list of ``{"filename": str | None, "content_type": str | None,
         "content_base64": str | None, "file_path": str | None, "is_inline": bool}`` — exactly
@@ -407,6 +415,8 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
             to_addresses=to_addresses,
             content_type=content_type,
             attachments=attachments,
+            cc_addresses=cc_addresses,
+            bcc_addresses=bcc_addresses,
         )
 
     @tool(requires_writes=True)

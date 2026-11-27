@@ -7,6 +7,7 @@ unless this process should call Graph send/category APIs directly.
 from __future__ import annotations
 
 import json
+import unicodedata
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -252,6 +253,48 @@ async def send_draft_email(ctx: Context, draft_id: str) -> str:
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
+_MAX_TOTAL_RECIPIENTS = 500  # Exchange limit: to + cc + bcc per message
+
+
+_FORBIDDEN_ADDR_CHARS = frozenset('<>,;"()')
+
+
+def _valid_email_address(addr: str) -> bool:
+    """Structural check only: one "@", non-empty local part, dotted domain with no empty labels,
+    no whitespace, control/format (zero-width, bidi) characters or any of <>,;"()."""
+    if not addr or any(c.isspace() or c in _FORBIDDEN_ADDR_CHARS or unicodedata.category(c) in ("Cc", "Cf") for c in addr):
+        return False
+    if addr.count("@") != 1:
+        return False
+    local, domain = addr.split("@")
+    labels = domain.split(".")
+    return bool(local) and len(labels) >= 2 and all(labels)
+
+
+def _clean_recipient_list(field: str, addresses: list[str] | None) -> tuple[list[str], dict | None]:
+    """Trim, validate and de-duplicate (case-insensitive) one recipient list.
+
+    Errors name the field and the count of bad entries only; addresses are never echoed.
+    """
+    if not addresses:
+        return [], None
+    cleaned = [a.strip() if isinstance(a, str) else "" for a in addresses]
+    bad = sum(1 for a in cleaned if not _valid_email_address(a))
+    if bad:
+        return [], {"field": field, "invalid_count": bad}
+    seen: set[str] = set()
+    unique: list[str] = []
+    for a in cleaned:
+        if a.lower() not in seen:
+            seen.add(a.lower())
+            unique.append(a)
+    return unique, None
+
+
+def _recipients_payload(addresses: list[str]) -> list[dict]:
+    return [{"emailAddress": {"address": a}} for a in addresses]
+
+
 async def create_draft(
     ctx: Context,
     subject: str,
@@ -259,8 +302,14 @@ async def create_draft(
     to_addresses: list[str] | None = None,
     content_type: str = "Text",
     attachments: list[dict] | None = None,
+    cc_addresses: list[str] | None = None,
+    bcc_addresses: list[str] | None = None,
 ) -> str:
     """Create a draft message in the signed-in user's Drafts folder.
+
+    ``cc_addresses`` / ``bcc_addresses`` are optional (trimmed, validated, de-duplicated per list;
+    to + cc + bcc <= 500). A draft with only BCC recipients is allowed. Responses carry
+    ``cc_count`` / ``bcc_count``, never the addresses.
 
     Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
     "content_type": str | None, "is_inline": bool}``. Each file is attached after the draft is
@@ -277,6 +326,33 @@ async def create_draft(
             }
         )
 
+    cc_list, cc_error = _clean_recipient_list("cc_addresses", cc_addresses)
+    bcc_list, bcc_error = _clean_recipient_list("bcc_addresses", bcc_addresses)
+    if cc_error or bcc_error:
+        errors = [e for e in (cc_error, bcc_error) if e]
+        await tool_log_warning(ctx, "create_draft: validation_error recipients")
+        detail = ", ".join(f"{e['field']}: {e['invalid_count']} invalid" for e in errors)
+        return json.dumps(
+            {
+                "error": "validation_error",
+                "field": errors[0]["field"],
+                "invalid_count": errors[0]["invalid_count"],
+                "fields": {e["field"]: e["invalid_count"] for e in errors},
+                "message": f"Invalid recipient address(es) ({detail}). Each must be like name@domain.tld, "
+                "without whitespace, control/zero-width characters or any of <>,;\"().",
+            }
+        )
+    total = len(to_addresses or []) + len(cc_list) + len(bcc_list)
+    if total > _MAX_TOTAL_RECIPIENTS:
+        await tool_log_warning(ctx, f"create_draft: validation_error too_many_recipients count={total}")
+        return json.dumps(
+            {
+                "error": "validation_error",
+                "field": "recipients",
+                "message": f"Too many recipients: {total} (to + cc + bcc); Exchange allows at most {_MAX_TOTAL_RECIPIENTS}.",
+            }
+        )
+
     parsed_attachments, error = _parse_and_validate_attachments(attachments, s)
     if error:
         return json.dumps(error)
@@ -285,19 +361,23 @@ async def create_draft(
         client = make_graph_client(ctx)
     except GRAPH_AUTH_ERRORS as e:
         return json.dumps(tool_error_token(e))
-    await tool_log_info(ctx, "create_draft: start")
+    await tool_log_info(ctx, f"create_draft: start cc={len(cc_list)} bcc={len(bcc_list)}")
     await tool_report_progress(ctx, 20, 100, message="create_draft: start")
     msg: dict = {
         "subject": subject,
         "body": {"contentType": content_type, "content": body_text},
     }
     if to_addresses:
-        msg["toRecipients"] = [{"emailAddress": {"address": a}} for a in to_addresses]
+        msg["toRecipients"] = _recipients_payload(to_addresses)
+    if cc_list:
+        msg["ccRecipients"] = _recipients_payload(cc_list)
+    if bcc_list:
+        msg["bccRecipients"] = _recipients_payload(bcc_list)
 
     try:
         await tool_report_progress(ctx, 60, 100, message="create_draft: calling Graph")
         created = await client.create_message_draft(msg)
-        result: dict = {"ok": True, "message": created}
+        result: dict = {"ok": True, "message": created, "cc_count": len(cc_list), "bcc_count": len(bcc_list)}
         if parsed_attachments:
             await tool_report_progress(ctx, 80, 100, message="create_draft: attaching files")
             try:
