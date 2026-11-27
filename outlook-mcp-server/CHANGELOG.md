@@ -2,6 +2,16 @@
 
 All notable changes to `outlook-multi-tenant-mcp`. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor = features).
 
+## 0.12.0 — 2026-11-27
+
+### Added
+- **`delete_draft`** (write tool): deletes a draft by Graph message id. The message is fetched first
+  (`$select=id,isDraft`); anything that is not a draft returns `{"ok": false, "error": "not_a_draft"}` and is
+  never deleted. Success returns `{"ok": true, "deleted": true}`, an unknown id `{"ok": false, "error": "not_found"}`.
+  Graph's `DELETE` does not purge: Exchange keeps the item recoverable (normally in Deleted Items, per the
+  mailbox's retention policy). If the draft is sent between the check and the delete, the sent item may be
+  moved to Deleted Items (narrow race). Needs `ENABLE_WRITE_OPERATIONS=true` and `Mail.ReadWrite`. Logs only the id preview.
+
 ## 0.11.0 — 2026-11-24
 
 ### Added

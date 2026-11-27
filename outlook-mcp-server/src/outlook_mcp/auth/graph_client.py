@@ -440,6 +440,14 @@ class GraphMailClient:
             r.raise_for_status()
             return r.json()
 
+    async def delete_message(self, message_id: str) -> None:
+        """DELETE ``/messages/{id}`` (Graph removes the message; Exchange keeps it recoverable, see tool docs)."""
+        enc = _encode_message_id_for_path(message_id)
+        base = self._user_prefix()
+        async with self._client() as c:
+            r = await c.delete(f"{base}/messages/{enc}")
+            r.raise_for_status()
+
     async def create_reply(
         self,
         message_id: str,

@@ -40,7 +40,7 @@ class _S(Settings):
 
 def _client() -> AsyncMock:
     c = AsyncMock()
-    c.get_message = AsyncMock(return_value=MSG)
+    c.get_message = AsyncMock(return_value={**MSG, "isDraft": True})
     c.list_inbox = AsyncMock(return_value={"value": [MSG]})
     c.resolve_mail_folder_id_by_display_name = AsyncMock(return_value="folder-1")
     c.search_messages = AsyncMock(return_value={"value": [MSG]})
@@ -51,6 +51,7 @@ def _client() -> AsyncMock:
     c.delete_master_category = AsyncMock(return_value=None)
     c.create_mail_folder = AsyncMock(return_value={"id": "f-1", "displayName": MARKER})
     c.update_message = AsyncMock(return_value={"id": "m1"})
+    c.delete_message = AsyncMock(return_value=None)
     c.move_message = AsyncMock(return_value={"id": "m2", "parentFolderId": "folder-1", "subject": MARKER})
     c.create_reply = AsyncMock(return_value={"id": "draft-1", "subject": f"RE: {MARKER}"})
     c.get_attachment = AsyncMock(
@@ -137,6 +138,7 @@ async def test_no_names_or_queries_in_logs(caplog: pytest.LogCaptureFixture) -> 
             await email_writer.mark_as_read(ctx=None, message_id=ident),
             await email_writer.set_message_categories(ctx=None, message_id=ident, categories=[MARKER]),
             await email_writer.move_email(ctx=None, message_id=ident, destination_folder_id=ident),
+            await email_writer.delete_draft(ctx=None, message_id=ident),
         ]
     # Each tool ran past argument validation (otherwise the empty-log assertion proves nothing).
     for out in outs:

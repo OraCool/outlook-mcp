@@ -338,6 +338,50 @@ async def create_draft(
         return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
 
 
+async def delete_draft(ctx: Context, message_id: str) -> str:
+    """Delete a draft message by Graph id; refuses anything that is not a draft.
+
+    Fetches ``isDraft`` first and only issues the DELETE when it is true (``not_a_draft`` otherwise).
+    Graph's ``DELETE /messages/{id}`` does not purge: Exchange keeps the item recoverable
+    (normally in Deleted Items, subject to the mailbox's retention policy). If the draft is sent
+    between the check and the delete, the sent item may be moved to Deleted Items (narrow race). Requires
+    ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
+    """
+    s = get_settings()
+    if not s.enable_write_operations:
+        await tool_log_info(ctx, "delete_draft: write_disabled (ENABLE_WRITE_OPERATIONS=false)")
+        return json.dumps(
+            {"error": "write_disabled", "message": "Set ENABLE_WRITE_OPERATIONS=true to enable delete_draft."}
+        )
+
+    try:
+        client = make_graph_client(ctx)
+    except GRAPH_AUTH_ERRORS as e:
+        return json.dumps(tool_error_token(e))
+
+    await tool_log_info(ctx, f"delete_draft: message_id={_preview(message_id)}")
+    try:
+        message = await client.get_message(message_id, select="id,isDraft")
+        if message.get("isDraft") is not True:
+            return json.dumps({"ok": False, "error": "not_a_draft"})
+        await client.delete_message(message_id)
+        return json.dumps({"ok": True, "deleted": True})
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return json.dumps({"ok": False, "error": "not_found"})
+        await tool_log_warning(ctx, f"delete_draft: http_error status={e.response.status_code}")
+        return json.dumps(
+            {
+                "error": "http_error",
+                "status_code": e.response.status_code,
+                "message": sanitize_client_error_message(e.response.text[:2000], max_len=2000),
+            }
+        )
+    except httpx.HTTPError as e:
+        await tool_log_warning(ctx, f"delete_draft: network_error {type(e).__name__}")
+        return json.dumps({"error": "network_error", "message": sanitize_client_error_message(str(e))})
+
+
 async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> str:
     """Mark a message as read (or unread). Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite."""
     s = get_settings()
