@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from outlook_mcp.config import get_settings, parse_tool_names
+from outlook_mcp.instructions import build_instructions
 from outlook_mcp.tools import (
     email_classifier,
     email_drafter,
@@ -40,17 +41,7 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
     _pypdf_log = logging.getLogger("pypdf")
     _pypdf_log.setLevel(logging.ERROR)
     _pypdf_log.propagate = False
-    mcp = MCPServer(
-        name="outlook-mcp",
-        instructions=(
-            "Microsoft Outlook / Graph mail tools for AR Email Management. "
-            "Auth: X-Graph-Token header; or enable OAuth and use GET /oauth/login then X-OAuth-Session; "
-            "or GRAPH_OAUTH_TOKEN_CACHE_PATH after outlook-mcp-oauth-device; or GRAPH_DEV_TOKEN for local dev. "
-            "search_emails: the query parameter is KQL (Keyword Query Language) against the signed-in user's mailbox; "
-            "Graph uses eventual consistency for this API. Reference: "
-            "https://learn.microsoft.com/en-us/graph/search-query-parameter"
-        ),
-    )
+    mcp = MCPServer(name="outlook-mcp")
 
     enabled = parse_tool_names(s.mcp_enabled_tools)
     disabled = parse_tool_names(s.mcp_disabled_tools)
@@ -720,6 +711,11 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
             raise ValueError(msg)
     # WARNING so it stays visible at LOG_LEVEL=WARNING (container default); names only.
     logger.warning("registered tools: %s", ", ".join(sorted(registered)))
+
+    # MCPServer.instructions is a read-only view of the low-level server's plain attribute, which
+    # ``initialize`` reads per request; the text depends on the final tool set, so set it here.
+    # Guarded by tests/test_server_instructions.py::test_initialize_result_carries_instructions (private SDK attribute).
+    mcp._lowlevel_server.instructions = build_instructions(registered, s.mcp_instructions_append)  # noqa: SLF001
 
     return mcp
 
