@@ -410,6 +410,17 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
         )
 
     @tool(requires_writes=True)
+    async def delete_draft(ctx: Context, message_id: str) -> str:
+        """Delete a draft by Graph message id (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite).
+
+        Drafts only: the message is fetched first and a non-draft is refused with ``not_a_draft``
+        (nothing is deleted). Graph's DELETE does not purge; Exchange keeps the item recoverable
+        (normally in Deleted Items, per the mailbox's retention policy). Returns
+        ``{"ok": true, "deleted": true}``, or ``{"ok": false, "error": "not_found" | "not_a_draft"}``.
+        """
+        return await email_writer.delete_draft(ctx, message_id=message_id)
+
+    @tool(requires_writes=True)
     async def mark_as_read(ctx: Context, message_id: str, is_read: bool = True) -> str:
         """Mark a message as read or unread (requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite)."""
         return await email_writer.mark_as_read(ctx, message_id, is_read=is_read)

@@ -20,6 +20,7 @@ BASELINE = frozenset(
         "create_master_category",
         "create_message_rule",
         "create_reply_draft",
+        "delete_draft",
         "delete_master_category",
         "delete_message_rule",
         "draft_reply",
