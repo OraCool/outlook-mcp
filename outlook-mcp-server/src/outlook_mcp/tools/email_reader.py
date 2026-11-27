@@ -48,12 +48,23 @@ if TYPE_CHECKING:
 
 _DEFAULT_SELECT = (
     "id,subject,bodyPreview,body,receivedDateTime,sentDateTime,conversationId,"
-    "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories,flag"
+    "internetMessageId,from,sender,toRecipients,ccRecipients,bccRecipients,isDraft,"
+    "isRead,hasAttachments,importance,categories,flag"
 )
 _LIST_SELECT = (
     "id,subject,bodyPreview,receivedDateTime,sentDateTime,conversationId,"
     "internetMessageId,from,sender,toRecipients,isRead,hasAttachments,importance,categories,flag"
 )
+
+
+def _recipient_list(items: object) -> list[dict[str, str | None]]:
+    """Graph recipient objects -> ``[{"address", "name"}]`` (same shape as ``to_recipients``)."""
+    out: list[dict[str, str | None]] = []
+    for item in items if isinstance(items, list) else []:
+        ea = item.get("emailAddress") if isinstance(item, dict) else None
+        if isinstance(ea, dict):
+            out.append({"address": ea.get("address"), "name": ea.get("name")})
+    return out
 
 
 async def get_email(message_id: str, ctx: Context) -> str:
@@ -71,10 +82,13 @@ async def get_email(message_id: str, ctx: Context) -> str:
         await tool_report_progress(ctx, 80, 100, message="get_email: mapping response")
         model = graph_message_to_model(raw)
         await tool_report_progress(ctx, 100, 100, message="get_email: complete")
-        payload = email_json_for_tool_response(
-            model.model_dump(mode="json", by_alias=True),
-            get_settings(),
-        )
+        settings = get_settings()
+        payload = email_json_for_tool_response(model.model_dump(mode="json", by_alias=True), settings)
+        payload["is_draft"] = raw.get("isDraft")
+        # Cc/Bcc only in the full response level; minimal/redacted keep their existing recipient handling.
+        if (getattr(settings, "pii_response_level", None) or "full").lower().strip() == "full":
+            payload["cc_recipients"] = _recipient_list(raw.get("ccRecipients"))
+            payload["bcc_recipients"] = _recipient_list(raw.get("bccRecipients"))
         return json.dumps(payload, indent=2)
     except httpx.HTTPStatusError as e:
         await tool_log_warning(ctx, f"get_email: http_error status={e.response.status_code}")
@@ -597,7 +611,7 @@ _MAX_CHARS_CEILING = 1_000_000
 
 
 async def get_attachment_text(message_id: str, attachment_id: str, ctx: Context, max_chars: int = 200000) -> str:
-    """Download a PDF attachment and return its extracted text (nothing is logged about content)."""
+    """Return the text of a PDF or plain-text attachment (nothing is logged about content)."""
     s = get_settings()
     max_chars = max(1, min(int(max_chars), _MAX_CHARS_CEILING))
     try:
@@ -614,7 +628,13 @@ async def get_attachment_text(message_id: str, attachment_id: str, ctx: Context,
     if len(raw) > s.attachment_text_max_bytes:
         return _TOO_LARGE_JSON
     if raw.lstrip(b"\x00 \t\r\n")[:5] != b"%PDF-":
-        return json.dumps({"ok": False, "error": "not_pdf"})
+        text = _decode_text_attachment(raw)
+        if text is None:
+            return json.dumps({"ok": False, "error": "unsupported_format"})
+        await tool_log_info(ctx, "get_attachment_text: complete")
+        return json.dumps(
+            {"ok": True, "format": "text", "text": text[:max_chars], "truncated": len(text) > max_chars}
+        )
     try:
         pages, text, page_limited = await _run_pdf_extraction(
             raw, max_chars, s.attachment_text_max_pages, s.attachment_text_timeout_seconds
@@ -627,7 +647,38 @@ async def get_attachment_text(message_id: str, attachment_id: str, ctx: Context,
         return json.dumps({"ok": False, "error": "unreadable"})
     truncated = page_limited or len(text) > max_chars
     await tool_log_info(ctx, "get_attachment_text: complete")
-    return json.dumps({"ok": True, "pages": pages, "text": text[:max_chars], "truncated": truncated})
+    return json.dumps(
+        {"ok": True, "format": "pdf", "pages": pages, "text": text[:max_chars], "truncated": truncated}
+    )
+
+
+# Share of control characters (other than tab, newlines, form feed) above which bytes are treated as binary.
+_TEXT_MAX_CONTROL_RATIO = 0.01
+
+
+def _decode_text_attachment(raw: bytes) -> str | None:
+    """Decode a plain-text attachment (TXT, CSV, XML, JSON, ...) or return ``None`` for binary data.
+
+    UTF-8 (with or without BOM) and BOM-marked UTF-16 are accepted; anything that does not decode
+    strictly or is mostly control characters is binary. The content is returned as-is: XML is not
+    parsed, so no entity expansion or external lookups can happen.
+    """
+    if raw.startswith(b"\xef\xbb\xbf"):
+        data, encoding = raw[3:], "utf-8"
+    elif raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        data, encoding = raw, "utf-16"
+    else:
+        data, encoding = raw, "utf-8"
+    try:
+        text = data.decode(encoding)
+    except UnicodeDecodeError:
+        return None
+    if not text.strip():
+        return None
+    controls = sum(1 for ch in text if ord(ch) < 32 and ch not in "\t\n\r\f")
+    if "\x00" in text or controls > len(text) * _TEXT_MAX_CONTROL_RATIO:
+        return None
+    return text
 
 
 def _scrub_attachment_text_error(error_json: str) -> str:
@@ -638,7 +689,7 @@ def _scrub_attachment_text_error(error_json: str) -> str:
         return json.dumps({"ok": False, "error": "unreadable"})
     kind = data.get("error")
     if kind == "unsupported_attachment_type":
-        return json.dumps({"ok": False, "error": "not_pdf"})
+        return json.dumps({"ok": False, "error": "unsupported_format"})
     if kind == "http_error":
         return json.dumps({"error": "http_error", "status_code": data.get("status_code")})
     if kind == "network_error":

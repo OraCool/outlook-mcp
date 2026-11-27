@@ -36,8 +36,8 @@ _LINES: tuple[tuple[frozenset[str], str], ...] = (
     ),
     (
         frozenset({"get_attachment_text"}),
-        "get_attachment_text: reads PDF text (e.g. to check a document) without downloading the file; size and "
-        "page caps apply.",
+        "get_attachment_text: reads PDF or plain-text attachments (TXT, CSV, XML, JSON) without downloading "
+        "the file; size and page caps apply.",
     ),
     (
         frozenset({"save_attachment_to_storage"}),
