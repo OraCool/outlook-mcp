@@ -21,6 +21,7 @@ MARKER = "marker.secret@contoso.example"
 
 
 async def _run(**kwargs):
+    kwargs.setdefault("compact", False)
     client = AsyncMock()
     client.create_message_draft = AsyncMock(return_value={"id": "d1"})
     with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_Enabled()):
@@ -182,3 +183,77 @@ async def test_no_addresses_in_logs(caplog: pytest.LogCaptureFixture) -> None:
         if r.levelno >= logging.INFO and ("contoso.example" in r.getMessage().lower() or "marker" in r.getMessage().lower())
     ]
     assert leaked == []
+
+
+_FULL_GRAPH_MESSAGE = {
+    "id": "d1",
+    "webLink": "https://outlook.example/draft/d1",
+    "isDraft": True,
+    "subject": "Quarterly plan",
+    "body": {"contentType": "Text", "content": "Confidential body"},
+    "toRecipients": [{"emailAddress": {"address": "to@contoso.example"}}],
+    "bccRecipients": [{"emailAddress": {"address": MARKER}}],
+}
+
+
+async def _run_full_graph(**kwargs):
+    client = AsyncMock()
+    client.create_message_draft = AsyncMock(return_value=dict(_FULL_GRAPH_MESSAGE))
+    client.add_attachment_small = AsyncMock(
+        return_value={"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}
+    )
+    with patch("outlook_mcp.tools.email_writer.get_settings", return_value=_Enabled()):
+        with patch("outlook_mcp.tools.email_writer.make_graph_client", return_value=client):
+            raw = await create_draft(ctx=None, subject="S", body_text="B", **kwargs)
+    return raw, json.loads(raw)
+
+
+@pytest.mark.asyncio
+async def test_default_response_is_compact_without_content_or_addresses() -> None:
+    raw, data = await _run_full_graph(
+        to_addresses=["to@contoso.example"], cc_addresses=["cc@contoso.example"], bcc_addresses=[MARKER]
+    )
+    assert data == {
+        "ok": True,
+        "id": "d1",
+        "webLink": "https://outlook.example/draft/d1",
+        "isDraft": True,
+        "to_count": 1,
+        "cc_count": 1,
+        "bcc_count": 1,
+    }
+    for leaked in ("toRecipients", "bccRecipients", "body", "subject", MARKER, "Confidential", "Quarterly"):
+        assert leaked not in raw
+
+
+@pytest.mark.asyncio
+async def test_compact_omits_weblink_and_isdraft_when_graph_did_not_return_them() -> None:
+    data, _ = await _run(to_addresses=["to@contoso.example"], compact=True)
+    assert data == {"ok": True, "id": "d1", "to_count": 1, "cc_count": 0, "bcc_count": 0}
+    assert "isDraft" not in data and "webLink" not in data
+
+
+@pytest.mark.asyncio
+async def test_compact_keeps_attachment_summary() -> None:
+    attachment = {"filename": "a.txt", "content_type": "text/plain", "content_base64": "aGVsbG8="}
+    _, data = await _run_full_graph(to_addresses=["to@contoso.example"], attachments=[attachment])
+    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}]
+    assert "message" not in data
+
+
+@pytest.mark.asyncio
+async def test_compact_false_returns_full_message_and_counts() -> None:
+    _, data = await _run_full_graph(
+        to_addresses=["to@contoso.example"], bcc_addresses=[MARKER], compact=False
+    )
+    assert data["ok"] is True
+    assert data["message"] == _FULL_GRAPH_MESSAGE
+    assert data["to_count"] == 1 and data["cc_count"] == 0 and data["bcc_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_compact_false_with_attachments_keeps_message() -> None:
+    attachment = {"filename": "a.txt", "content_type": "text/plain", "content_base64": "aGVsbG8="}
+    _, data = await _run_full_graph(to_addresses=["to@contoso.example"], attachments=[attachment], compact=False)
+    assert data["message"] == _FULL_GRAPH_MESSAGE
+    assert data["attachments"] == [{"id": "att-1", "name": "a.txt", "size": 5, "contentType": "text/plain"}]

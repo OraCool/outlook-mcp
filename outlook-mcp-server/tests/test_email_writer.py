@@ -171,6 +171,7 @@ async def test_create_draft_success() -> None:
                 subject="My Draft",
                 body_text="Draft body",
                 to_addresses=["a@b.com"],
+                compact=False,
             )
     data = json.loads(result)
     assert data["ok"] is True
