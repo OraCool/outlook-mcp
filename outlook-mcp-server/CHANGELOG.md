@@ -2,6 +2,16 @@
 
 All notable changes to `outlook-multi-tenant-mcp`. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor = features).
 
+## 0.13.0 — 2026-11-27
+
+### Added
+- **`create_draft`: `cc_addresses` / `bcc_addresses`** (optional lists) mapped to Graph `ccRecipients` /
+  `bccRecipients`. Each address is trimmed and checked (one `@`, non-empty local part, dotted domain, no
+  whitespace or control characters); each list is de-duplicated case-insensitively; to + cc + bcc is capped at
+  500 (Exchange limit). Invalid input returns `validation_error` with the `field` and `invalid_count`, never the
+  addresses. A BCC-only draft is allowed (group reminders: put everyone in `bcc_addresses`). The response gains
+  `cc_count` / `bcc_count`; logs carry counts only.
+
 ## 0.12.0 — 2026-11-27
 
 ### Added
