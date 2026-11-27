@@ -295,6 +295,17 @@ def _recipients_payload(addresses: list[str]) -> list[dict]:
     return [{"emailAddress": {"address": a}} for a in addresses]
 
 
+def compact_created_draft(created: dict[str, Any], counts: dict[str, int]) -> dict[str, Any]:
+    """The few fields an agent needs after creating a draft — no recipients, subject or body."""
+    result: dict[str, Any] = {"ok": True, "id": created.get("id")}
+    if created.get("webLink"):
+        result["webLink"] = created["webLink"]
+    if "isDraft" in created:
+        result["isDraft"] = created["isDraft"]
+    result.update(counts)
+    return result
+
+
 async def create_draft(
     ctx: Context,
     subject: str,
@@ -304,12 +315,17 @@ async def create_draft(
     attachments: list[dict] | None = None,
     cc_addresses: list[str] | None = None,
     bcc_addresses: list[str] | None = None,
+    compact: bool = True,
 ) -> str:
     """Create a draft message in the signed-in user's Drafts folder.
 
     ``cc_addresses`` / ``bcc_addresses`` are optional (trimmed, validated, de-duplicated per list;
-    to + cc + bcc <= 500). A draft with only BCC recipients is allowed. Responses carry
-    ``cc_count`` / ``bcc_count``, never the addresses.
+    to + cc + bcc <= 500). A draft with only BCC recipients is allowed. Validation errors never echo
+    addresses. ``compact`` (default) returns only ``{ok, id, webLink, isDraft, to_count, cc_count,
+    bcc_count}`` (``webLink`` when Graph returned it) — no recipients, subject or body.
+    ``compact=False`` returns the Graph message as ``message`` (recipients and body included) plus the counts.
+    ``to_count`` is the raw length of ``to_addresses`` (not validated or de-duplicated, unlike cc/bcc).
+    Graph error messages on failure paths may echo request details.
 
     Optional ``attachments``: list of ``{"filename": str, "content_base64": str,
     "content_type": str | None, "is_inline": bool}``. Each file is attached after the draft is
@@ -377,7 +393,11 @@ async def create_draft(
     try:
         await tool_report_progress(ctx, 60, 100, message="create_draft: calling Graph")
         created = await client.create_message_draft(msg)
-        result: dict = {"ok": True, "message": created, "cc_count": len(cc_list), "bcc_count": len(bcc_list)}
+        counts = {"to_count": len(to_addresses or []), "cc_count": len(cc_list), "bcc_count": len(bcc_list)}
+        if compact:
+            result: dict = compact_created_draft(created, counts)
+        else:
+            result = {"ok": True, "message": created, **counts}
         if parsed_attachments:
             await tool_report_progress(ctx, 80, 100, message="create_draft: attaching files")
             try:

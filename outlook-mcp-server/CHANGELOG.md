@@ -2,6 +2,18 @@
 
 All notable changes to `outlook-multi-tenant-mcp`. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor = features).
 
+## 0.13.1 — 2026-11-27
+
+### Changed
+- **Behaviour change: `create_draft` now returns a compact response by default** (new `compact: bool = True`,
+  mirroring `move_email`). The default response is `{ok, id, webLink, isDraft, to_count, cc_count, bcc_count}`
+  (`webLink` when Graph returned it) plus the `attachments` summary (id/name/size/contentType) when files were
+  attached — no recipients, subject or body. Pass `compact=false` for the full Graph message under `message`
+  (recipients and body included), now also with `to_count`. Callers that read `message` must pass `compact=false`.
+- Docs: "never echoes addresses" applies to validation errors; a successful call with `compact=true` carries counts
+  only, with `compact=false` the Graph message (including recipients) is returned. `to_count` is the raw length of
+  `to_addresses` (not validated or de-duplicated); Graph error messages on failure paths may echo request details.
+
 ## 0.13.0 — 2026-11-27
 
 ### Added

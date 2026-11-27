@@ -393,6 +393,7 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
         attachments: list[dict] | None = None,
         cc_addresses: list[str] | None = None,
         bcc_addresses: list[str] | None = None,
+        compact: bool = True,
     ) -> str:
         """Create a draft message (requires ENABLE_WRITE_OPERATIONS=true).
 
@@ -400,13 +401,19 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
         de-duplicated per list; at most 500 recipients in total across to + cc + bcc). For group
         reminders put all participants in ``bcc_addresses`` so they don't see each other; a draft with
         only BCC recipients is allowed (leave ``to_addresses`` empty or use your own mailbox). The
-        response reports ``cc_count`` / ``bcc_count`` and never echoes addresses.
+        validation errors never echo addresses.
+
+        ``compact`` (default true) returns only ``{ok, id, webLink, isDraft, to_count, cc_count,
+        bcc_count}`` (``webLink`` when Graph returned it) — counts only, no recipients, subject or
+        body. ``compact=false`` returns the Graph message as ``message`` (recipients and body
+        included) plus the counts. ``to_count`` is the raw length of ``to_addresses`` (not validated
+        or de-duplicated). Graph error messages on failure paths may echo request details.
 
         Optional ``attachments``: list of ``{"filename": str | None, "content_type": str | None,
         "content_base64": str | None, "file_path": str | None, "is_inline": bool}`` — exactly
         one of ``content_base64``/``file_path`` per entry; prefer ``file_path`` for anything but
         tiny files (see ``send_email`` for why). Response includes an ``attachments`` list
-        (id/name/size/contentType) for what was attached.
+        (id/name/size/contentType) for what was attached (in both modes).
         """
         return await email_writer.create_draft(
             ctx,
@@ -417,6 +424,7 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
             attachments=attachments,
             cc_addresses=cc_addresses,
             bcc_addresses=bcc_addresses,
+            compact=compact,
         )
 
     @tool(requires_writes=True)
