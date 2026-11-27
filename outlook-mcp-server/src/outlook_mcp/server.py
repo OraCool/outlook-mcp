@@ -93,6 +93,9 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
 
         Omits the full message body by default; use ``get_email`` for body text.
         Each item includes ``bodyPreview`` and metadata.
+
+        The thread includes the mailbox's own sent replies: before deciding a message is
+        unanswered, check its thread here rather than relying on the inbox view alone.
         """
         return await email_reader.get_thread(conversation_id, ctx, top=top)
 
@@ -107,10 +110,10 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
         received_before: str | None = None,
         priority_filter: str = "any",
     ) -> str:
-        """Search the signed-in user's mailbox using KQL (Keyword Query Language).
+        """Search the mailbox using KQL (Keyword Query Language).
 
-        Microsoft Graph applies the query via ``$search`` on ``/me/messages`` with
-        ``ConsistencyLevel: eventual`` (eventual consistency).
+        Microsoft Graph applies the query via ``$search`` on the mailbox's messages with
+        ``ConsistencyLevel: eventual`` (eventual consistency; very recent mail may be missing).
 
         Results omit the full message body by default; use ``get_email`` for body text.
         Each hit includes ``bodyPreview`` and metadata.
@@ -119,7 +122,8 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
 
         Date filters (UTC, YYYY-MM-DD for KQL): ``received_on`` (single day), or
         ``received_after`` / ``received_before`` (range or open-ended). Do not combine
-        ``received_on`` with ``received_after`` / ``received_before``.
+        ``received_on`` with ``received_after`` / ``received_before``. Prefer these parameters
+        over KQL date terms such as ``received:2026-01-01..2026-01-31``.
 
         ``priority_filter``: ``any`` (default), ``high``, ``medium``, or ``low`` — Outlook
         message importance (Graph ``high`` / ``normal`` / ``low``), not classifier priority.
@@ -177,6 +181,9 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
 
         ``priority_filter``: ``any``, ``high``, ``medium``, or ``low`` (Outlook importance).
         ``sort_by_priority``: when true, order by importance then newest first.
+
+        The inbox view does not show replies already sent from this mailbox: before deciding
+        a message is unanswered, check its thread (``get_thread``) or ``sentitems``.
         """
         return await email_reader.list_inbox(
             ctx,
@@ -386,7 +393,7 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
         bcc_addresses: list[str] | None = None,
         compact: bool = True,
     ) -> str:
-        """Create a draft message (requires ENABLE_WRITE_OPERATIONS=true).
+        """Create a draft message (requires ENABLE_WRITE_OPERATIONS=true). Nothing is sent.
 
         Optional ``cc_addresses`` / ``bcc_addresses`` (lists of plain addresses; trimmed, validated,
         de-duplicated per list; at most 500 recipients in total across to + cc + bcc). For group
@@ -677,6 +684,10 @@ def build_mcp(_extra_tools: Callable[[Any], None] | None = None) -> MCPServer:
         to send ``comment`` as markup, matching ``create_draft`` / ``send_email``. The quoted
         original is preserved in both cases. Optional ``attachments``: same shape as
         ``create_draft``.
+
+        The reply is addressed to the original sender. If the original was sent from this
+        mailbox (e.g. a follow-up to your own message), the reply would be addressed to the
+        mailbox itself: use ``create_draft`` with explicit recipients instead. Nothing is sent.
 
         Requires ENABLE_WRITE_OPERATIONS=true and Mail.ReadWrite.
         """
