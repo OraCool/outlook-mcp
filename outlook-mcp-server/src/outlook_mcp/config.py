@@ -61,6 +61,13 @@ class Settings(BaseSettings):
         description="Comma-separated tool names to remove (applied after MCP_ENABLED_TOOLS).",
     )
 
+    mcp_instructions_append: str = Field(
+        default="",
+        validation_alias=AliasChoices("MCP_INSTRUCTIONS_APPEND", "mcp_instructions_append"),
+        description="Deployment-specific text appended to the generated server instructions (capped at 4000 chars).",
+        repr=False,
+    )
+
     graph_oauth_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("GRAPH_OAUTH_ENABLED", "graph_oauth_enabled"),

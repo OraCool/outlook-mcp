@@ -123,6 +123,18 @@ MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 uv run outlook-mcp-
 
 Point an MCP client at `http://<host>:8000/mcp` (Streamable HTTP).
 
+## Server instructions
+
+The `instructions` string returned to MCP clients at `initialize` is generated at startup from the tools that
+are actually registered, so it never describes a tool the deployment removed (`MCP_ENABLED_TOOLS`,
+`MCP_DISABLED_TOOLS`, missing prerequisites). It is short plain text: what the server is, KQL examples for
+`search_emails`, thread checks before calling a message unanswered, `create_draft` / `create_reply_draft` /
+`delete_draft` caveats, folder-name resolution, attachment tool behaviour, and, when no send tool is registered,
+a line telling the model to prepare drafts instead.
+
+Set `MCP_INSTRUCTIONS_APPEND` to add deployment-specific hints (for example naming conventions) without changing
+the package. The text is appended as-is after the generated lines, truncated to 4000 characters, and is not logged.
+
 ## MCP Inspector
 
 Use the official [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to connect to this server and try tools in the browser.
@@ -415,6 +427,7 @@ storage, the `Storage Blob Data Contributor` role on the target container.
 | `ATTACHMENT_TEXT_MAX_BYTES` | Largest PDF `get_attachment_text` will download and parse (default `15000000`). |
 | `ATTACHMENT_TEXT_MAX_PAGES` | Pages extracted per PDF (default `200`); beyond it the result is marked truncated. |
 | `ATTACHMENT_TEXT_TIMEOUT_SECONDS` | Wall-clock bound for extraction (default `30`); on timeout the result is `unreadable`. |
+| `MCP_INSTRUCTIONS_APPEND` | Optional text appended to the generated server instructions (see "Server instructions"); truncated to 4000 characters, never logged. |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, applied to the root and `outlook_mcp` loggers at startup. Empty (default) leaves logging unchanged. Use `WARNING` in production. |
 
 Fail-closed rules: `managed_identity` requires `GRAPH_AUTH_MODE=application` and a non-empty

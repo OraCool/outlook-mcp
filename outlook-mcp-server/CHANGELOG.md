@@ -2,6 +2,18 @@
 
 All notable changes to `outlook-multi-tenant-mcp`. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor = features).
 
+## 0.14.0 — 2026-11-27
+
+### Added
+- **Tool-aware server instructions.** The MCP `instructions` returned by `initialize` are now generated from the
+  tools that are actually registered (after `MCP_ENABLED_TOOLS` / `MCP_DISABLED_TOOLS` and prerequisite settings):
+  KQL hints for `search_emails`, thread checks, `create_draft` / `create_reply_draft` / `delete_draft` pitfalls,
+  folder-name resolution, attachment tools, and a "this deployment does not allow sending" line when no send tool
+  is registered. A line appears only when its tool is registered. The old static text (which mentioned a
+  specific product and header auth only) is gone.
+- **`MCP_INSTRUCTIONS_APPEND`**: optional deployment-specific text appended to the generated instructions
+  (capped at 4000 characters, never logged).
+
 ## 0.13.1 — 2026-11-27
 
 ### Changed
